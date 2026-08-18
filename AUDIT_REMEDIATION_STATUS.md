@@ -63,7 +63,7 @@ Baseline output: `artifacts/baseline-test-results.txt`.
 | R8 — config + WS lifecycle | COMPLETE | `3e5a0b2` |
 | R9 — docs + reproducible deps | COMPLETE | `7c253cc` |
 | R10 — recovery and chaos acceptance | COMPLETE | `7ac2fc8` |
-| R11 — live staging validation | PARTIAL (public Bybit done; Telegram items blocked on real credentials) | `6f95a71` |
+| R11 — live staging validation | PARTIAL (public Bybit done; Telegram items blocked on real credentials) | `6f7640b` |
 | R12 — 24-hour soak | pending | |
 | R13 — final acceptance | pending | |
 
