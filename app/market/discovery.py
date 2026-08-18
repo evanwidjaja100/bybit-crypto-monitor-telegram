@@ -152,6 +152,7 @@ class InstrumentDiscovery:
         self.last_success_at: Optional[int] = None
 
     async def discover_once(self, now: Optional[int] = None) -> DiscoveryResult:
+        effective_now = int(now if now is not None else time.time())
         fetched: list[Instrument] = []
         if self.config.enable_spot:
             fetched.extend(await self.rest.get_spot_instruments())
@@ -169,9 +170,9 @@ class InstrumentDiscovery:
         if self.config.enable_inverse:
             fetched.extend(await self.rest.get_inverse_instruments())
 
-        result = await self.registry.reconcile(fetched, now)
+        result = await self.registry.reconcile(fetched, effective_now)
         self.last_result = result
-        self.last_success_at = now
+        self.last_success_at = effective_now
         logger.info(
             "event=discovery_complete instruments=%d first_run=%s events=%d",
             result.instrument_count,

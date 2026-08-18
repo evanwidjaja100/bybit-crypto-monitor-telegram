@@ -58,7 +58,10 @@ class BybitWebSocketClient:
         self._symbols: set[str] = set()
         self._subscribed: set[str] = set()
         self._connect_attempts = 0
+        # Epoch wall-clock timestamp of the last received message (health).
         self._last_message_at = 0.0
+        # Monotonic timestamp of the last received message (stale watchdog).
+        self._last_message_monotonic = 0.0
         self._last_ping_at = 0.0
         self.connected = False
         self._ws: Any = None
@@ -69,8 +72,13 @@ class BybitWebSocketClient:
 
     @property
     def last_message_at(self) -> float:
-        """Monotonic timestamp of the last received message (0 = never)."""
+        """Epoch timestamp of the last received message (0 = never)."""
         return self._last_message_at
+
+    @property
+    def last_message_monotonic(self) -> float:
+        """Monotonic timestamp of the last received message (0 = never)."""
+        return self._last_message_monotonic
 
     def set_symbols(self, symbols: Iterable[str]) -> None:
         """Update the desired subscription set (managed by the registry)."""
@@ -119,7 +127,8 @@ class BybitWebSocketClient:
             self.connected = True
             self._ws = ws
             self._subscribed = set()
-            self._last_message_at = time.monotonic()
+            self._last_message_at = time.time()
+            self._last_message_monotonic = time.monotonic()
             self._last_ping_at = time.monotonic()
             self._set_status(True)
             logger.info("event=ws_connected stream=%s", self.category)
@@ -131,7 +140,7 @@ class BybitWebSocketClient:
                     raw = await asyncio.wait_for(ws.recv(), timeout=0.5)
                 except asyncio.TimeoutError:
                     if self._symbols and (
-                        time.monotonic() - self._last_message_at
+                        time.monotonic() - self._last_message_monotonic
                         > self.config.ws_stale_seconds
                     ):
                         logger.warning(
@@ -190,12 +199,14 @@ class BybitWebSocketClient:
     def _handle_raw(self, raw: str) -> None:
         data = json.loads(raw)
         if data.get("op") == "pong":
-            self._last_message_at = time.monotonic()
+            self._last_message_at = time.time()
+            self._last_message_monotonic = time.monotonic()
             return
         topic = data.get("topic") or ""
         if topic.startswith("tickers."):
             symbol = topic[len("tickers.") :]
-            self._last_message_at = time.monotonic()
+            self._last_message_at = time.time()
+            self._last_message_monotonic = time.monotonic()
             self.on_message(
                 {
                     "category": self.category,

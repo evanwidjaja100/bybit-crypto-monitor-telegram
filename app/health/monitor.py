@@ -44,7 +44,10 @@ class HealthState:
 
 
 def _age(now: int, last_seen: Optional[int]) -> Optional[int]:
-    return None if last_seen is None else now - int(last_seen)
+    if last_seen is None:
+        return None
+    # Never negative: a slightly skewed clock must not read as "future".
+    return max(0, now - int(last_seen))
 
 
 class HealthMonitor:
