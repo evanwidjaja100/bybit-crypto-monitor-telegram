@@ -12,6 +12,7 @@ from typing import Optional
 
 from app.config import Settings
 from app.market.deduplication import QualifyingSet
+from app.market.listing import EVENT_ANNOUNCED, EVENT_DELISTED, EVENT_PRELAUNCH, EVENT_TRADING
 from app.market.momentum import MomentumValue
 
 HEADER_TRANSITION = "🚨 BYBIT 1H MOMENTUM ALERT"
@@ -122,4 +123,34 @@ def format_alert(
     return "\n".join(parts)
 
 
-__all__ = ["format_alert", "HEADER_TRANSITION", "HEADER_HOURLY", "HEADER_COMPOSITION"]
+def format_listing_alert(
+    event: dict,
+    now: Optional[int] = None,
+) -> str:
+    """Format a listing event notification (Phase 9)."""
+    now = int(now if now is not None else time.time())
+    event_type = event["event_type"]
+    label = {
+        EVENT_PRELAUNCH: "PreLaunch",
+        EVENT_TRADING: "Now Trading",
+        EVENT_ANNOUNCED: "Announced",
+        EVENT_DELISTED: "Delisted",
+    }.get(event_type, event_type.title())
+    parts = [
+        "🆕 BYBIT NEW LISTING",
+        "",
+        f"{event['symbol']} ({event['category'] or 'announcement'})",
+        f"Status: {label}",
+        "",
+        f"Updated: {_timestamp_line(now)}",
+    ]
+    return "\n".join(parts)
+
+
+__all__ = [
+    "format_alert",
+    "format_listing_alert",
+    "HEADER_TRANSITION",
+    "HEADER_HOURLY",
+    "HEADER_COMPOSITION",
+]

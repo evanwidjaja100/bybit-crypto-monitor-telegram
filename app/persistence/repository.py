@@ -266,6 +266,62 @@ class AlertStateRepository:
         await self.db.commit()
 
 
+class ListingEventRepository:
+    """Idempotent persistent store for listing events (Phase 9)."""
+
+    def __init__(self, db: Database) -> None:
+        self.db = db
+
+    async def record(
+        self,
+        event_key: str,
+        category: Optional[str],
+        symbol: str,
+        event_type: str,
+        now: int,
+    ) -> Optional[dict[str, Any]]:
+        """Insert a listing event; returns it only when newly created."""
+        cursor = await self.db.execute(
+            "INSERT OR IGNORE INTO listing_events "
+            "(event_key, category, symbol, event_type, first_seen_at, telegram_sent) "
+            "VALUES (?, ?, ?, ?, ?, 0)",
+            (event_key, category, symbol, event_type, now),
+        )
+        await self.db.commit()
+        if cursor.rowcount == 0:
+            return None
+        return {
+            "event_key": event_key,
+            "category": category,
+            "symbol": symbol,
+            "event_type": event_type,
+            "first_seen_at": now,
+            "telegram_sent": 0,
+        }
+
+    async def mark_sent(self, event_key: str) -> None:
+        await self.db.execute(
+            "UPDATE listing_events SET telegram_sent = 1 WHERE event_key = ?",
+            (event_key,),
+        )
+        await self.db.commit()
+
+    async def unsent(self) -> list[dict[str, Any]]:
+        """Events that were never notified (delisted events are silent)."""
+        rows = await self.db.fetchall(
+            "SELECT * FROM listing_events "
+            "WHERE telegram_sent = 0 AND event_type != 'delisted'"
+        )
+        return [dict(row) for row in rows]
+
+    async def list_all(self, limit: int = 100) -> list[dict[str, Any]]:
+        rows = await self.db.fetchall(
+            "SELECT * FROM listing_events ORDER BY first_seen_at DESC LIMIT ?",
+            (limit,),
+        )
+        return [dict(row) for row in rows]
+
+
 class PriceSampleRepository:
     """Persistent spot price-history store for 1h momentum anchors."""
 
@@ -332,6 +388,7 @@ __all__ = [
     "Repository",
     "InstrumentRepository",
     "AlertStateRepository",
+    "ListingEventRepository",
     "PriceSampleRepository",
     "row_to_instrument",
 ]
