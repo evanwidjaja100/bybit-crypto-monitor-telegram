@@ -30,9 +30,12 @@ class FakeDiscovery:
 
 
 class FakeTelegram:
-    def __init__(self, last_success_at=None, last_error_at=None) -> None:
+    def __init__(
+        self, last_success_at=None, last_error_at=None, last_error_type=None
+    ) -> None:
         self.last_success_at = last_success_at
         self.last_error_at = last_error_at
+        self.last_error_type = last_error_type
 
 
 class FakeDispatcher:
@@ -168,6 +171,24 @@ class TestSnapshot:
         )
         state = await monitor.snapshot(now=1_700_000_000)
         assert state.telegram_healthy is True
+
+    async def test_telegram_latest_failure_surfaces(self, config):
+        """Phase F7 - health reflects the latest delivery state, never a
+        stale success."""
+        monitor = make_monitor(
+            config,
+            telegram=FakeTelegram(
+                last_success_at=1_000,
+                last_error_at=1_700_000_000 - 31,
+                last_error_type="http_429",
+            ),
+        )
+        state = await monitor.snapshot(now=1_700_000_000)
+        assert state.telegram_healthy is False
+        assert state.telegram_last_error_type == "http_429"
+        assert state.telegram_last_error_age == 31
+        text = HealthMonitor.format_summary(state)
+        assert "Telegram: unhealthy (last failure: 31s ago http_429)" in text
 
 
 class TestSummary:

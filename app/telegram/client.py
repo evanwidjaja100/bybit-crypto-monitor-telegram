@@ -75,6 +75,12 @@ class TelegramClient:
         self._owns_client = client is None
         self.last_success_at: Optional[int] = None
         self.last_error_at: Optional[int] = None
+        self.last_error_type: Optional[str] = None
+
+    def _record_failure(self, error_type: str) -> None:
+        """Every failed delivery attempt updates the health state."""
+        self.last_error_at = int(time.time())
+        self.last_error_type = error_type
 
     async def send_message(self, text: str) -> None:
         """Send ``text``, splitting into <=4096-char chunks as needed."""
@@ -98,6 +104,7 @@ class TelegramClient:
                 response = await (await self._http()).post(url, json=payload)
                 if response.status_code == 429:
                     retry_after = self._parse_retry_after(response)
+                    self._record_failure("http_429")
                     raise TelegramSendError(
                         "http_429", retry_after=retry_after
                     )
@@ -105,16 +112,23 @@ class TelegramClient:
                     raise _RetryableSendError(f"http_{response.status_code}")
                 if response.status_code >= 400:
                     # 400-class is permanent (bad token, unknown chat, ...).
+                    self._record_failure(f"http_{response.status_code}")
                     raise TelegramPermanentError(f"http_{response.status_code}")
                 body = response.json()
                 if not body.get("ok"):
+                    self._record_failure("telegram_ok_false")
                     raise TelegramPermanentError("telegram_ok_false")
                 self.last_success_at = int(time.time())
                 return
             except (_RetryableSendError, httpx.HTTPError) as exc:
                 attempt += 1
+                self._record_failure(
+                    f"{type(exc).__name__}:attempt_{attempt}"
+                )
                 if attempt > self.config.telegram_max_retries:
-                    self.last_error_at = int(time.time())
+                    self._record_failure(
+                        f"retries_exhausted:{type(exc).__name__}"
+                    )
                     raise TelegramSendError(
                         f"retries_exhausted:{type(exc).__name__}"
                     ) from exc

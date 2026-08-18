@@ -163,6 +163,13 @@ class Repository:
         )
         return int(row["c"])  # type: ignore[index]
 
+    async def count_dead(self) -> int:
+        row = await self.db.fetchone(
+            "SELECT COUNT(*) AS c FROM outgoing_notifications "
+            "WHERE status = 'dead'"
+        )
+        return int(row["c"])  # type: ignore[index]
+
     async def find_notification_by_dedupe(
         self, dedupe_key: str
     ) -> Optional[dict[str, Any]]:

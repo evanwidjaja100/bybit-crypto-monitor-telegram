@@ -157,6 +157,76 @@ class TestSendMessage:
         await http.aclose()
 
 
+class TestTelegramHealthTracking:
+    """Phase F7 - every failed delivery attempt must update health state
+    so health never reports stale success."""
+
+    async def test_429_updates_health_failure(self):
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(
+                429, json={"ok": False, "parameters": {"retry_after": 45}}
+            )
+
+        client, http = build_client(config(), handler)
+        with pytest.raises(TelegramSendError):
+            await client.send_message("hello")
+        assert client.last_error_at is not None
+        assert client.last_error_type == "http_429"
+        assert client.last_success_at is None
+        await http.aclose()
+
+    async def test_permanent_400_updates_health_failure(self):
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(400, json={"ok": False})
+
+        client, http = build_client(config(), handler)
+        with pytest.raises(TelegramSendError):
+            await client.send_message("hello")
+        assert client.last_error_at is not None
+        assert client.last_error_type == "http_400"
+        await http.aclose()
+
+    async def test_network_failure_updates_health_failure(self):
+        def handler(request: httpx.Request) -> httpx.Response:
+            raise httpx.ConnectError("connection refused")
+
+        client, http = build_client(config(telegram_max_retries=1), handler)
+        with pytest.raises(TelegramSendError):
+            await client.send_message("hello")
+        assert client.last_error_at is not None
+        assert client.last_error_type == "retries_exhausted:ConnectError"
+        await http.aclose()
+
+    async def test_success_after_failure_restores_healthy_state(self):
+        attempts = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            attempts.append(1)
+            if len(attempts) <= 3:  # 3 attempts all fail -> exhausted
+                return httpx.Response(500)
+            return httpx.Response(200, json={"ok": True})
+
+        client, http = build_client(config(telegram_max_retries=2), handler)
+        with pytest.raises(TelegramSendError):
+            await client.send_message("boom")
+        assert client.last_error_at is not None
+
+        await client.send_message("hello")
+        assert client.last_success_at is not None
+        assert client.last_success_at >= client.last_error_at
+        assert len(attempts) == 4  # 3 failed attempts + 1 success
+        await http.aclose()
+
+    async def test_success_records_last_success_at(self):
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(200, json={"ok": True})
+
+        client, http = build_client(config(), handler)
+        await client.send_message("hello")
+        assert client.last_success_at is not None
+        await http.aclose()
+
+
 class TestSplitMessage:
     def test_short_text_unchanged(self):
         assert split_message("short") == ["short"]

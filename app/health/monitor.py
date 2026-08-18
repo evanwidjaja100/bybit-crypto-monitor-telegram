@@ -32,6 +32,9 @@ class HealthState:
     linear_ws_connected: bool = False
     telegram_healthy: bool = False
     dispatcher_healthy: bool = True
+    telegram_last_error_type: Optional[str] = None
+    telegram_last_error_age: Optional[int] = None
+    telegram_dead_count: int = 0
     database_healthy: bool = False
     last_spot_ticker_age: Optional[int] = None
     last_linear_ticker_age: Optional[int] = None
@@ -128,6 +131,10 @@ class HealthMonitor:
             state.telegram_healthy = last_success is not None and (
                 last_error is None or last_success >= last_error
             )
+            state.telegram_last_error_type = getattr(
+                self.telegram, "last_error_type", None
+            )
+            state.telegram_last_error_age = _age(now, last_error)
             if not state.telegram_healthy:
                 state.notes.append("telegram unhealthy")
 
@@ -140,6 +147,13 @@ class HealthMonitor:
             )
             if not state.dispatcher_healthy:
                 state.notes.append("dispatcher unhealthy")
+            repo = getattr(self.dispatcher, "repo", None)
+            count_dead = getattr(repo, "count_dead", None)
+            if callable(count_dead):
+                try:
+                    state.telegram_dead_count = await count_dead()
+                except Exception:
+                    state.telegram_dead_count = -1
 
         if self.registry is not None:
             await self._collect_counts(state)
@@ -177,6 +191,15 @@ class HealthMonitor:
                 return "disconnected"
             return f"connected ({age_text(age)} last msg)"
 
+        telegram_line = "healthy"
+        if not state.telegram_healthy:
+            telegram_line = "unhealthy"
+        if state.telegram_last_error_type:
+            telegram_line += (
+                f" (last failure: {age_text(state.telegram_last_error_age)} "
+                f"ago {state.telegram_last_error_type})"
+            )
+
         return (
             "HEALTH\n"
             "------\n"
@@ -186,11 +209,12 @@ class HealthMonitor:
             f"Spot WS: {ws_text(state.spot_ws_connected, state.last_spot_ticker_age)}\n"
             f"Linear WS: {ws_text(state.linear_ws_connected, state.last_linear_ticker_age)}\n"
             f"REST: {'healthy' if state.rest_healthy else 'unhealthy'}\n"
-            f"Telegram: {'healthy' if state.telegram_healthy else 'unhealthy'}\n"
+            f"Telegram: {telegram_line}\n"
             f"Dispatcher: {'healthy' if state.dispatcher_healthy else 'unhealthy'}\n"
             f"Database: {'healthy' if state.database_healthy else 'unhealthy'}\n"
             f"Qualifying coins: {state.qualifying_coin_count}\n"
             f"Telegram queue: {state.telegram_queue_depth}\n"
+            f"Telegram dead: {state.telegram_dead_count}\n"
             f"Last discovery: {age_text(state.last_discovery_age)} ago"
         )
 
