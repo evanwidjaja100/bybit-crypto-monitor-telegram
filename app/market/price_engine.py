@@ -94,11 +94,21 @@ class PriceEngine:
             return False
         return True
 
+    def apply_snapshot(self, ticker: Ticker) -> None:
+        """Store a full WebSocket snapshot (replaces the previous state)."""
+        if ticker.symbol and ticker.last_price is not None and ticker.last_price < 0:
+            self.rejected += 1
+            return
+        key = ticker.identity
+        self._latest[key] = ticker
+        self.accepted += 1
+
     def update_from_delta(self, category: str, symbol: str, data: dict) -> None:
         """Merge a WebSocket delta into the existing snapshot.
 
         The existing ticker (if any) is copied and updated field-by-field
         with the delta; a partial delta never replaces the full snapshot.
+        Numeric strings are normalized (they are strings on the wire).
         """
         key = (category, symbol)
         existing = self._latest.get(key)
@@ -107,24 +117,40 @@ class PriceEngine:
                 "event=delta_without_snapshot category=%s symbol=%s", category, symbol
             )
             return
-        change_24h = _percent_from_fraction(data.get("price24hPcnt"))
+
+        def merged(key_: str, existing_value, converter=None):
+            value = data.get(key_)
+            if value is None:
+                return existing_value
+            if converter is not None:
+                value = converter(value)
+                if value is None:
+                    return existing_value
+            return value
+
+        change_24h = merged(
+            "price24hPcnt", existing.change_24h, _percent_from_fraction
+        )
+        timestamp = existing.timestamp
+        ts_raw = data.get("ts")
+        if ts_raw is not None:
+            try:
+                timestamp = int(float(ts_raw)) // 1000
+            except (TypeError, ValueError):
+                pass
         latest = Ticker(
             category=existing.category,
             symbol=existing.symbol,
-            last_price=data.get("lastPrice", existing.last_price),
-            mark_price=data.get("markPrice", existing.mark_price),
-            index_price=data.get("indexPrice", existing.index_price),
-            prev_price_1h=data.get("prevPrice1h", existing.prev_price_1h),
-            change_24h=(
-                change_24h if change_24h is not None else existing.change_24h
-            ),
-            turnover_24h=data.get("turnover24h", existing.turnover_24h),
-            volume_24h=data.get("volume24h", existing.volume_24h),
-            open_interest=data.get("openInterest", existing.open_interest),
-            funding_rate=data.get("fundingRate", existing.funding_rate),
-            timestamp=(
-                int(float(data["ts"])) // 1000 if data.get("ts") else existing.timestamp
-            ),
+            last_price=merged("lastPrice", existing.last_price, float),
+            mark_price=merged("markPrice", existing.mark_price, float),
+            index_price=merged("indexPrice", existing.index_price, float),
+            prev_price_1h=merged("prevPrice1h", existing.prev_price_1h, float),
+            change_24h=change_24h,
+            turnover_24h=merged("turnover24h", existing.turnover_24h, float),
+            volume_24h=merged("volume24h", existing.volume_24h, float),
+            open_interest=merged("openInterest", existing.open_interest, float),
+            funding_rate=merged("fundingRate", existing.funding_rate, float),
+            timestamp=timestamp,
         )
         self._latest[key] = latest
 

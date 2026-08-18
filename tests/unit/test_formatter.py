@@ -122,7 +122,7 @@ class TestContent:
                     9.42,
                     mark=0.08410,
                     ch24=18.30,
-                    funding=0.018,
+                    funding=0.00018,
                     turnover=42800000.0,
                 )
             ),

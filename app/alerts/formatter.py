@@ -74,7 +74,8 @@ def _coin_block(value: MomentumValue) -> str:
         if value.mark_price is not None:
             lines.append(f"Mark: {_fmt_price(value.mark_price)}")
         if value.funding_rate is not None:
-            lines.append(f"Funding: {_fmt_percent(value.funding_rate, 3)}")
+            # Funding arrives as a fraction (0.00018 == 0.018%).
+            lines.append(f"Funding: {_fmt_percent(value.funding_rate * 100.0, 3)}")
     if value.turnover_24h is not None:
         lines.append(f"24H Turnover: {_fmt_turnover(value.turnover_24h)}")
     return "\n".join(lines)

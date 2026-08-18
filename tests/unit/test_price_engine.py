@@ -80,7 +80,7 @@ class TestDeltaMerging:
             "linear", "BTCUSDT", {"lastPrice": "65100.0", "ts": "1700000000000"}
         )
         updated = price_engine.get("linear", "BTCUSDT")
-        assert updated.last_price == "65100.0"
+        assert updated.last_price == 65100.0
         # Fields not in the delta are preserved.
         assert updated.prev_price_1h == 60000.0
 
@@ -97,7 +97,7 @@ class TestDeltaMerging:
             {"lastPrice": "70000.0", "price24hPcnt": "0.0750", "ts": "1700000000000"},
         )
         updated = price_engine.get("linear", "BTCUSDT")
-        assert updated.last_price == "70000.0"
+        assert updated.last_price == 70000.0
         assert updated.change_24h == 7.5
 
     def test_delta_snapshot_never_replaced_fully(self, price_engine):
