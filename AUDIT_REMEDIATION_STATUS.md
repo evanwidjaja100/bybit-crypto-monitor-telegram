@@ -61,13 +61,21 @@ Baseline output: `artifacts/baseline-test-results.txt`.
 | R6 — Bybit API contract alignment | COMPLETE | `b798c20` |
 | R7 — health and clock semantics | COMPLETE | `9d75412` |
 | R8 — config + WS lifecycle | COMPLETE | `3e5a0b2` |
-| R9 — docs + reproducible deps | COMPLETE | (next commit) |
-| R10 — recovery and chaos acceptance | pending | |
-| R11 — live staging validation | pending | |
+| R9 — docs + reproducible deps | COMPLETE | `7c253cc` |
+| R10 — recovery and chaos acceptance | COMPLETE | `7ac2fc8` |
+| R11 — live staging validation | PARTIAL (public Bybit done; Telegram items blocked on real credentials) | `6f95a71` |
 | R12 — 24-hour soak | pending | |
 | R13 — final acceptance | pending | |
 
-Current test count (after R9): 280 passed / 0 failed, plus
+Current test count (after R10): 283 passed / 0 failed (3 consecutive identical
+full-suite runs, artifacts/remediation-full-tests-run{1,2,3}.txt), plus
 `scripts/soak_test.py` (26h simulated in ~30s, deterministic).
+
+R11 public Bybit validation recorded in `artifacts/live-bybit-validation.txt`:
+spot 555 instruments (no pagination args), linear 824 trading (756 USDT +
+68 USDC) + 5 PreLaunch, WS spot/linear connect with sane top-level `ts`.
+R11 operator tasks (blocked, need real Telegram credentials + .env):
+17.3 controlled Telegram delivery (transition + listing through outbox),
+17.4 controlled Telegram outage, 17.5 container restart with pending outbox.
 
 Project status: **NOT PRODUCTION READY** until Phase R12 succeeds.
