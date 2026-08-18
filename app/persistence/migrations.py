@@ -109,6 +109,21 @@ MIGRATIONS: Sequence[tuple[int, list[str]]] = [
             "ALTER TABLE alert_state ADD COLUMN pending_from TEXT",
         ],
     ),
+    (
+        3,
+        [
+            # Durable outbox: dedupe, retry scheduling and origin tracking
+            # (Phase R3/R4/R5).
+            "ALTER TABLE outgoing_notifications ADD COLUMN dedupe_key TEXT",
+            "ALTER TABLE outgoing_notifications ADD COLUMN attempt_count INTEGER NOT NULL DEFAULT 0",
+            "ALTER TABLE outgoing_notifications ADD COLUMN next_attempt_at INTEGER",
+            "ALTER TABLE outgoing_notifications ADD COLUMN last_attempt_at INTEGER",
+            "ALTER TABLE outgoing_notifications ADD COLUMN origin_type TEXT",
+            "ALTER TABLE outgoing_notifications ADD COLUMN origin_key TEXT",
+            "CREATE UNIQUE INDEX idx_outgoing_dedupe ON outgoing_notifications (dedupe_key) "
+            "WHERE dedupe_key IS NOT NULL",
+        ],
+    ),
 ]
 
 

@@ -46,11 +46,28 @@ class AlertDispatcher:
         self._worker = asyncio.create_task(self._run())
         logger.info("event=telegram_dispatcher_started")
 
-    async def enqueue(self, text: str, tag: str = "alert") -> int:
+    async def enqueue(
+        self,
+        text: str,
+        tag: str = "alert",
+        dedupe_key: Optional[str] = None,
+        origin_type: Optional[str] = None,
+        origin_key: Optional[str] = None,
+    ) -> int:
         """Persist the notification and hand it to the Telegram queue."""
-        notification_id = await self.repo.insert_outgoing_notification(tag, text)
+        notification_id = await self.repo.insert_outgoing_notification(
+            tag,
+            text,
+            dedupe_key=dedupe_key,
+            origin_type=origin_type,
+            origin_key=origin_key,
+        )
         await self.queue.put((notification_id, text))
         return notification_id
+
+    def feed(self, notification_id: int, message: str) -> None:
+        """Hand an already-persisted row to the queue (atomic path)."""
+        self.queue.put_nowait((notification_id, message))
 
     async def _requeue_pending(self) -> None:
         rows = await self.repo.list_notifications(limit=1000, status="pending")

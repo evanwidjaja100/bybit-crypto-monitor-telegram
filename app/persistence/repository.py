@@ -67,14 +67,20 @@ class Repository:
         message: str,
         status: str = "pending",
         created_at: Optional[int] = None,
+        dedupe_key: Optional[str] = None,
+        origin_type: Optional[str] = None,
+        origin_key: Optional[str] = None,
+        commit: bool = True,
     ) -> int:
         created_at = created_at if created_at is not None else int(time.time())
         cursor = await self.db.execute(
             "INSERT INTO outgoing_notifications "
-            "(message_tag, message, created_at, status) VALUES (?, ?, ?, ?)",
-            (message_tag, message, created_at, status),
+            "(message_tag, message, created_at, status, dedupe_key, "
+            "origin_type, origin_key) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (message_tag, message, created_at, status, dedupe_key, origin_type, origin_key),
         )
-        await self.db.commit()
+        if commit:
+            await self.db.commit()
         return cursor.lastrowid  # type: ignore[return-value]
 
     async def mark_notification_sent(self, notification_id: int) -> None:
@@ -240,6 +246,31 @@ class AlertStateRepository:
         last_hourly_bucket: Optional[str],
         last_composition_at: Optional[int],
     ) -> None:
+        await self.save_no_commit(
+            state,
+            fingerprint,
+            updated_at,
+            last_transition_at,
+            pending_since,
+            pending_from,
+            last_hourly_bucket,
+            last_composition_at,
+        )
+        await self.db.commit()
+
+    async def save_no_commit(
+        self,
+        state: str,
+        fingerprint: tuple[str, ...],
+        updated_at: int,
+        last_transition_at: Optional[int],
+        pending_since: Optional[int],
+        pending_from: Optional[str],
+        last_hourly_bucket: Optional[str],
+        last_composition_at: Optional[int],
+    ) -> None:
+        """Same upsert as :meth:`save` but without committing, so callers
+        can combine it with other writes in one transaction."""
         await self.db.execute(
             """
             INSERT INTO alert_state (
@@ -268,7 +299,6 @@ class AlertStateRepository:
                 last_composition_at,
             ),
         )
-        await self.db.commit()
 
 
 class ListingEventRepository:
