@@ -149,6 +149,7 @@ class InstrumentDiscovery:
         self.config = config
         self.on_events = on_events
         self.last_result: Optional[DiscoveryResult] = None
+        self.last_success_at: Optional[int] = None
 
     async def discover_once(self, now: Optional[int] = None) -> DiscoveryResult:
         fetched: list[Instrument] = []
@@ -170,6 +171,7 @@ class InstrumentDiscovery:
 
         result = await self.registry.reconcile(fetched, now)
         self.last_result = result
+        self.last_success_at = now
         logger.info(
             "event=discovery_complete instruments=%d first_run=%s events=%d",
             result.instrument_count,

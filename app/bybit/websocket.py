@@ -67,6 +67,11 @@ class BybitWebSocketClient:
     def url(self) -> str:
         return f"{self.config.bybit_ws_base_url}/{self.category}"
 
+    @property
+    def last_message_at(self) -> float:
+        """Monotonic timestamp of the last received message (0 = never)."""
+        return self._last_message_at
+
     def set_symbols(self, symbols: Iterable[str]) -> None:
         """Update the desired subscription set (managed by the registry)."""
         self._symbols = set(symbols)

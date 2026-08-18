@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import random
+import time
 from typing import Optional
 
 import httpx
@@ -56,6 +57,8 @@ class TelegramClient:
         self.config = config
         self._client = client
         self._owns_client = client is None
+        self.last_success_at: Optional[int] = None
+        self.last_error_at: Optional[int] = None
 
     async def send_message(self, text: str) -> None:
         """Send ``text``, splitting into <=4096-char chunks as needed."""
@@ -84,10 +87,12 @@ class TelegramClient:
                 body = response.json()
                 if not body.get("ok"):
                     raise TelegramSendError("telegram_ok_false")
+                self.last_success_at = int(time.time())
                 return
             except (_RetryableSendError, httpx.HTTPError) as exc:
                 attempt += 1
                 if attempt > self.config.telegram_max_retries:
+                    self.last_error_at = int(time.time())
                     raise TelegramSendError(
                         f"retries_exhausted:{type(exc).__name__}"
                     ) from exc
