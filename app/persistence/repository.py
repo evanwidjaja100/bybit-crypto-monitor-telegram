@@ -156,6 +156,23 @@ class Repository:
         )
         return int(row["c"])  # type: ignore[index]
 
+    async def find_notification_by_dedupe(
+        self, dedupe_key: str
+    ) -> Optional[dict[str, Any]]:
+        row = await self.db.fetchone(
+            "SELECT * FROM outgoing_notifications WHERE dedupe_key = ?",
+            (dedupe_key,),
+        )
+        return dict(row) if row else None
+
+    async def mark_listing_sent(self, event_key: str, commit: bool = True) -> None:
+        await self.db.execute(
+            "UPDATE listing_events SET telegram_sent = 1 WHERE event_key = ?",
+            (event_key,),
+        )
+        if commit:
+            await self.db.commit()
+
     async def list_notifications(
         self, limit: int = 100, status: Optional[str] = None
     ) -> list[dict[str, Any]]:

@@ -10,8 +10,9 @@ Event types: ``prelaunch``, ``trading``, ``announced``, ``delisted``.
 
 Idempotency: events are keyed ``(category, symbol, event_type)`` and
 inserted with ``INSERT OR IGNORE``; restarts never resend. The
-``telegram_sent`` flag tracks notification state and unsent events are
-retried on startup.
+``telegram_sent`` flag means CONFIRMED Telegram delivery: it is only set
+by the dispatcher after a successful send. On startup ``reconcile_unsent``
+re-pairs unsent events with the outbox instead of blindly re-notifying.
 """
 
 from __future__ import annotations
@@ -66,19 +67,31 @@ def event_key_for(
     return f"{category or _PSEUDO_CATEGORY}:{symbol}:{event_type}"
 
 
+def listing_dedupe_key(event_key: str) -> str:
+    """Deterministic outbox dedupe key for a listing event."""
+    return f"listing:{event_key}"
+
+
 class ListingTracker:
-    """Persists listing events and notifies once per event."""
+    """Persists listing events and enqueues delivery once per event."""
 
     def __init__(
         self,
         repo: ListingEventRepository,
         config: Settings,
         notify: Optional[Any] = None,
+        outbox: Optional[Any] = None,
     ) -> None:
-        """``notify`` is an async callable ``(event: dict) -> None``."""
+        """``notify`` is an async callable ``(event: dict) -> None``.
+
+        ``outbox`` (optional ``Repository``) powers the R5 reconciliation:
+        unsent events are paired with their durable outbox rows instead of
+        being blindly re-notified on restart.
+        """
         self.repo = repo
         self.config = config
         self.notify = notify
+        self.outbox = outbox
 
     # ------------------------------------------------------------------
     # Signal A + B: registry events
@@ -155,14 +168,37 @@ class ListingTracker:
         return created
 
     # ------------------------------------------------------------------
-    # Startup retry: notify any event that was never delivered
+    # Startup retry: re-pair unsent events with the durable outbox
     # ------------------------------------------------------------------
     async def reconcile_unsent(self) -> int:
-        count = 0
+        """Repair notification state for events that were never confirmed.
+
+        With an outbox (production): a pending/retry row is left to the
+        dispatcher, a sent row repairs the stale ``telegram_sent`` flag,
+        and a missing row is re-created with the deterministic dedupe key.
+        Without an outbox (standalone tests): every unsent event is
+        notified again.
+        """
+        repaired = 0
         for event in await self.repo.unsent():
+            if self.outbox is not None:
+                row = await self.outbox.find_notification_by_dedupe(
+                    listing_dedupe_key(event["event_key"])
+                )
+                if row is not None:
+                    if row["status"] == "sent":
+                        # The outbox confirms delivery; repair the flag.
+                        await self.repo.mark_sent(event["event_key"])
+                        repaired += 1
+                        logger.info(
+                            "event=listing_flag_repaired key=%s",
+                            event["event_key"],
+                        )
+                    # pending/retry: the dispatcher owns delivery.
+                    continue
             await self._notify(event)
-            count += 1
-        return count
+            repaired += 1
+        return repaired
 
     # ------------------------------------------------------------------
     # Notification
@@ -172,8 +208,9 @@ class ListingTracker:
             return
         if self.notify is None or not self.config.listing_notifications_enabled:
             return
+        # Enqueue only: ``telegram_sent`` is set by the dispatcher after
+        # confirmed delivery, never here.
         await self.notify(event)
-        await self.repo.mark_sent(event["event_key"])
 
 
 __all__ = [
@@ -183,4 +220,5 @@ __all__ = [
     "EVENT_DELISTED",
     "ListingTracker",
     "event_key_for",
+    "listing_dedupe_key",
 ]

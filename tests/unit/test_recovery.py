@@ -232,8 +232,9 @@ class TestRestartAfterListingNotification:
         created = await tracker.handle_registry(result, now=1_700_000_100)
         assert created == []
         assert notify_calls == []
-        # The sent marker survived the restart.
-        assert await tracker.repo.unsent() == []
+        # Delivery was never confirmed (no dispatcher in this test): the
+        # event legitimately stays unsent and will be reconciled on start.
+        assert len(await tracker.repo.unsent()) == 1
         await db.close()
 
     async def test_unsent_event_requeued_on_restart(self, tmp_path):

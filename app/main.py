@@ -130,6 +130,7 @@ class Application:
             ListingEventRepository(self.db),
             cfg,
             notify=self._notify_listing,
+            outbox=Repository(self.db),
         )
         await self.listing_tracker.reconcile_unsent()
 
@@ -269,7 +270,11 @@ class Application:
 
     def _notify_listing(self, event: dict) -> object:
         return self.dispatcher.enqueue(
-            format_listing_alert(event), tag="listing"
+            format_listing_alert(event),
+            tag="listing",
+            dedupe_key=f"listing:{event['event_key']}",
+            origin_type="listing",
+            origin_key=event["event_key"],
         )
 
     async def _on_ws_reconnect(self, category: str) -> None:

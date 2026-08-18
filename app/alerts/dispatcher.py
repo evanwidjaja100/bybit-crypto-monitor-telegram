@@ -117,7 +117,18 @@ class AlertDispatcher:
         notification_id = int(row["id"])
         try:
             await self.client.send_message(row["message"])
-            await self.repo.mark_notification_sent(notification_id)
+            if row.get("origin_type") == "listing" and row.get("origin_key"):
+                # Confirm outbox + listing event in one transaction so a
+                # crash cannot leave them inconsistent.
+                async with self.repo.db.transaction():
+                    await self.repo.mark_notification_sent(
+                        notification_id, commit=False
+                    )
+                    await self.repo.mark_listing_sent(
+                        row["origin_key"], commit=False
+                    )
+            else:
+                await self.repo.mark_notification_sent(notification_id)
         except TelegramPermanentError as exc:
             await self.repo.mark_notification_dead(
                 notification_id, f"{type(exc).__name__}: {exc}"
