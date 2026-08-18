@@ -31,6 +31,7 @@ class HealthState:
     spot_ws_connected: bool = False
     linear_ws_connected: bool = False
     telegram_healthy: bool = False
+    dispatcher_healthy: bool = True
     database_healthy: bool = False
     last_spot_ticker_age: Optional[int] = None
     last_linear_ticker_age: Optional[int] = None
@@ -134,6 +135,11 @@ class HealthMonitor:
             depth = getattr(self.dispatcher, "depth", None)
             if callable(depth):
                 state.telegram_queue_depth = await depth()
+            state.dispatcher_healthy = bool(
+                getattr(self.dispatcher, "worker_healthy", True)
+            )
+            if not state.dispatcher_healthy:
+                state.notes.append("dispatcher unhealthy")
 
         if self.registry is not None:
             await self._collect_counts(state)
@@ -181,6 +187,7 @@ class HealthMonitor:
             f"Linear WS: {ws_text(state.linear_ws_connected, state.last_linear_ticker_age)}\n"
             f"REST: {'healthy' if state.rest_healthy else 'unhealthy'}\n"
             f"Telegram: {'healthy' if state.telegram_healthy else 'unhealthy'}\n"
+            f"Dispatcher: {'healthy' if state.dispatcher_healthy else 'unhealthy'}\n"
             f"Database: {'healthy' if state.database_healthy else 'unhealthy'}\n"
             f"Qualifying coins: {state.qualifying_coin_count}\n"
             f"Telegram queue: {state.telegram_queue_depth}\n"

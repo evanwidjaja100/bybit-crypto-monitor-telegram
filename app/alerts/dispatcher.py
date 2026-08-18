@@ -34,6 +34,11 @@ logger = logging.getLogger("bybit_monitor.alerts.dispatcher")
 # exponential backoff up to 1 hour.
 RETRY_DELAYS = (10, 30, 60, 300, 600, 1200, 2400, 3600)
 
+# Consecutive unexpected worker-loop failures after which the dispatcher
+# reports itself unhealthy (the process keeps running so the Docker
+# healthcheck / restart policy can act on it).
+MAX_CONSECUTIVE_WORKER_FAILURES = 5
+
 
 def retry_delay_for(attempt_count: int) -> int:
     """Delay after ``attempt_count`` failed attempts."""
@@ -53,11 +58,28 @@ class AlertDispatcher:
         self._wake = asyncio.Event()
         self._stop = asyncio.Event()
         self._worker: Optional[asyncio.Task] = None
+        # Worker health surface (Phase F4): an unexpected error inside the
+        # loop must never silently kill delivery.
+        self.worker_started_at: Optional[int] = None
+        self.worker_last_iteration_at: Optional[int] = None
+        self.worker_last_error_at: Optional[int] = None
+        self.worker_error_count: int = 0
+        self._consecutive_failures: int = 0
 
     async def start(self) -> None:
         self._wake.set()
+        self.worker_started_at = int(time.time())
         self._worker = asyncio.create_task(self._run())
         logger.info("event=telegram_dispatcher_started")
+
+    @property
+    def worker_healthy(self) -> bool:
+        """Alive and not stuck in a loop of consecutive failures."""
+        if self._worker is None:
+            return True
+        if self._worker.done():
+            return False
+        return self._consecutive_failures <= MAX_CONSECUTIVE_WORKER_FAILURES
 
     async def enqueue(
         self,
@@ -88,24 +110,48 @@ class AlertDispatcher:
         self._wake.set()
 
     async def _run(self) -> None:
-        while True:
-            await self.repo.expire_notifications(
-                int(self.config.notification_max_age_seconds),
-                int(self.config.listing_notification_max_age_seconds),
-            )
-            processed = await self._process_due()
-            if processed:
-                continue
-            if self._stop.is_set():
-                break
+        """Supervised worker loop.
+
+        One unexpected operational error must not terminate delivery: it
+        is logged, counted and retried after a short backoff. Cancellation
+        still stops the worker cleanly. Permanent programming errors
+        surface via ``worker_healthy`` once consecutive failures exceed
+        the threshold.
+        """
+        while not self._stop.is_set():
             try:
-                await asyncio.wait_for(
-                    self._wake.wait(), timeout=self.config.dispatcher_poll_seconds
-                )
-            except asyncio.TimeoutError:
-                pass
-            finally:
-                self._wake.clear()
+                await self._iteration()
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.exception("event=telegram_dispatcher_loop_error")
+                self._consecutive_failures += 1
+                self.worker_error_count += 1
+                self.worker_last_error_at = int(time.time())
+                await asyncio.sleep(self.config.dispatcher_error_backoff_seconds)
+            else:
+                self._consecutive_failures = 0
+                self.worker_last_iteration_at = int(time.time())
+
+    async def _iteration(self) -> None:
+        """One worker cycle: expire, deliver due rows, then wait for work."""
+        await self.repo.expire_notifications(
+            int(self.config.notification_max_age_seconds),
+            int(self.config.listing_notification_max_age_seconds),
+        )
+        processed = await self._process_due()
+        if processed:
+            return
+        if self._stop.is_set():
+            return
+        try:
+            await asyncio.wait_for(
+                self._wake.wait(), timeout=self.config.dispatcher_poll_seconds
+            )
+        except asyncio.TimeoutError:
+            pass
+        finally:
+            self._wake.clear()
 
     async def _process_due(self) -> bool:
         rows = await self.repo.due_notifications()

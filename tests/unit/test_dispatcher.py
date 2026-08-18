@@ -64,6 +64,97 @@ async def status_is(db, expected: str) -> bool:
     return (await latest_status(db)) == expected
 
 
+class TestDispatcherSupervision:
+    """Phase F4 - the worker must survive unexpected operational errors."""
+
+    async def test_transient_repo_error_does_not_kill_worker(
+        self, tmp_path, db, monkeypatch
+    ):
+        client = FakeClient()
+        cfg = config(tmp_path, dispatcher_error_backoff_seconds=0.01)
+        dispatcher = AlertDispatcher(client, Repository(db), cfg)
+        real_expire = Repository.expire_notifications
+        calls = {"n": 0}
+
+        async def flaky_expire(self_, *args, **kwargs):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                raise RuntimeError("injected transient failure")
+            return await real_expire(self_, *args, **kwargs)
+
+        monkeypatch.setattr(Repository, "expire_notifications", flaky_expire)
+        await dispatcher.start()
+        try:
+            assert await wait_for(lambda: calls["n"] >= 1)
+            await dispatcher.enqueue("survives")
+            assert await wait_for(lambda: client.sent == ["survives"])
+            assert dispatcher.worker_error_count == 1
+            assert dispatcher.worker_last_error_at is not None
+            assert dispatcher.worker_last_iteration_at is not None
+        finally:
+            await dispatcher.stop()
+
+    async def test_transient_due_query_error_does_not_kill_worker(
+        self, tmp_path, db, monkeypatch
+    ):
+        client = FakeClient()
+        cfg = config(tmp_path, dispatcher_error_backoff_seconds=0.01)
+        dispatcher = AlertDispatcher(client, Repository(db), cfg)
+        real_due = Repository.due_notifications
+        calls = {"n": 0}
+
+        async def flaky_due(self_, *args, **kwargs):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                raise RuntimeError("injected due-query failure")
+            return await real_due(self_, *args, **kwargs)
+
+        monkeypatch.setattr(Repository, "due_notifications", flaky_due)
+        await dispatcher.start()
+        try:
+            assert await wait_for(lambda: calls["n"] >= 1)
+            await dispatcher.enqueue("still-alive")
+            assert await wait_for(lambda: client.sent == ["still-alive"])
+            assert dispatcher.worker_error_count == 1
+        finally:
+            await dispatcher.stop()
+
+    async def test_consecutive_failures_mark_worker_unhealthy_then_recover(
+        self, tmp_path, db, monkeypatch
+    ):
+        client = FakeClient()
+        cfg = config(tmp_path, dispatcher_error_backoff_seconds=0.01)
+        dispatcher = AlertDispatcher(client, Repository(db), cfg)
+        real_expire = Repository.expire_notifications
+
+        async def always_fail(self_, *args, **kwargs):
+            raise RuntimeError("persistent injected failure")
+
+        monkeypatch.setattr(Repository, "expire_notifications", always_fail)
+        await dispatcher.start()
+        try:
+            assert await wait_for(lambda: dispatcher.worker_healthy is False, timeout=5.0)
+            assert dispatcher.worker_error_count >= 5
+
+            monkeypatch.setattr(Repository, "expire_notifications", real_expire)
+            dispatcher.wake()
+            assert await wait_for(lambda: dispatcher.worker_healthy is True, timeout=5.0)
+            assert dispatcher.worker_error_count >= 5  # counter is cumulative
+            await dispatcher.enqueue("recovered")
+            assert await wait_for(lambda: client.sent == ["recovered"])
+        finally:
+            await dispatcher.stop()
+
+    async def test_cancellation_stops_worker_cleanly(self, tmp_path, db):
+        client = FakeClient()
+        dispatcher = AlertDispatcher(client, Repository(db), config(tmp_path))
+        await dispatcher.start()
+        dispatcher._worker.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await asyncio.wait_for(dispatcher._worker, timeout=5.0)
+        await db.execute("SELECT 1")  # database still usable
+
+
 class TestRetryDelay:
     def test_retry_delay_progression(self):
         assert retry_delay_for(1) == 10

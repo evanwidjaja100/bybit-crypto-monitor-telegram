@@ -24,6 +24,7 @@ _NUMERIC_NON_NEGATIVE = (
     "ws_stale_seconds",
     "health_summary_seconds",
     "dispatcher_poll_seconds",
+    "dispatcher_error_backoff_seconds",
     "notification_max_age_seconds",
     "listing_notification_max_age_seconds",
 )
@@ -117,6 +118,8 @@ class Settings(BaseSettings):
 
     # --- Dispatcher / delivery ---
     dispatcher_poll_seconds: float = 2.0
+    # Pause after an unexpected worker error before retrying the loop.
+    dispatcher_error_backoff_seconds: float = 5.0
     # Retryable alerts expire after this age; listing alerts stay longer
     # because a listing notification remains relevant.
     notification_max_age_seconds: float = 7200.0  # 2 hours
