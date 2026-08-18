@@ -223,6 +223,7 @@ class AlertStateRepository:
                 "updated_at": 0,
                 "last_transition_at": None,
                 "pending_since": None,
+                "pending_from": None,
                 "last_hourly_bucket": None,
                 "last_composition_at": None,
             }
@@ -235,6 +236,7 @@ class AlertStateRepository:
         updated_at: int,
         last_transition_at: Optional[int],
         pending_since: Optional[int],
+        pending_from: Optional[str],
         last_hourly_bucket: Optional[str],
         last_composition_at: Optional[int],
     ) -> None:
@@ -242,14 +244,16 @@ class AlertStateRepository:
             """
             INSERT INTO alert_state (
                 id, state, fingerprint, updated_at, last_transition_at,
-                pending_since, last_hourly_bucket, last_composition_at
-            ) VALUES (1, ?, ?, ?, ?, ?, ?, ?)
+                pending_since, pending_from, last_hourly_bucket,
+                last_composition_at
+            ) VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(id) DO UPDATE SET
                 state = excluded.state,
                 fingerprint = excluded.fingerprint,
                 updated_at = excluded.updated_at,
                 last_transition_at = excluded.last_transition_at,
                 pending_since = excluded.pending_since,
+                pending_from = excluded.pending_from,
                 last_hourly_bucket = excluded.last_hourly_bucket,
                 last_composition_at = excluded.last_composition_at
             """,
@@ -259,6 +263,7 @@ class AlertStateRepository:
                 updated_at,
                 last_transition_at,
                 pending_since,
+                pending_from,
                 last_hourly_bucket,
                 last_composition_at,
             ),

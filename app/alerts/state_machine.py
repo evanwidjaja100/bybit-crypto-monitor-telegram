@@ -105,6 +105,7 @@ class AlertStateMachine:
         if new_state == STATE_ACTIVE_RANGE:
             if prev_state != STATE_ACTIVE_RANGE and state.get("pending_since") is None:
                 state["pending_since"] = now
+                state["pending_from"] = prev_state
             pending = state.get("pending_since")
             if pending is None:
                 # Stable in the active range: only composition updates apply.
@@ -118,17 +119,22 @@ class AlertStateMachine:
                 if debounced:
                     if self.config.immediate_transition_alerts:
                         decision.live_transition = True
-                        decision.transition_reason = f"{prev_state} -> {new_state}"
+                        decision.transition_reason = (
+                            f"{state.get('pending_from') or prev_state} -> {new_state}"
+                        )
                         state["last_transition_at"] = now
-                        # The transition alert is this bucket's snapshot.
-                        state["last_hourly_bucket"] = hourly_bucket(now)
                     state["pending_since"] = None
+                    state["pending_from"] = None
+                    # The debounced transition owns this hourly bucket.
+                    state["last_hourly_bucket"] = hourly_bucket(now)
         else:
             # Leaving ACTIVE_RANGE cancels any pending transition.
             state["pending_since"] = None
+            state["pending_from"] = None
 
         if (
             new_state == STATE_ACTIVE_RANGE
+            and state.get("pending_since") is None
             and self.config.hourly_active_alerts
             and not decision.live_transition
         ):
@@ -162,6 +168,7 @@ class AlertStateMachine:
             updated_at=int(state["updated_at"]),
             last_transition_at=state.get("last_transition_at"),
             pending_since=state.get("pending_since"),
+            pending_from=state.get("pending_from"),
             last_hourly_bucket=state.get("last_hourly_bucket"),
             last_composition_at=state.get("last_composition_at"),
         )
@@ -175,6 +182,7 @@ class AlertStateMachine:
                 "updated_at": int(time.time()),
                 "last_transition_at": None,
                 "pending_since": None,
+                "pending_from": None,
                 "last_hourly_bucket": None,
                 "last_composition_at": None,
             }

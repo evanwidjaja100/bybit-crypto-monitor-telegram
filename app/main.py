@@ -269,7 +269,7 @@ class Application:
 
     def _notify_listing(self, event: dict) -> object:
         return self.dispatcher.enqueue(
-            format_listing_alert(event, self.config), tag="listing"
+            format_listing_alert(event), tag="listing"
         )
 
     async def _on_ws_reconnect(self, category: str) -> None:

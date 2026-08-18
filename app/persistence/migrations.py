@@ -101,6 +101,14 @@ MIGRATIONS: Sequence[tuple[int, list[str]]] = [
             """,
         ],
     ),
+    (
+        2,
+        [
+            # The debounced transition remembers which state it started
+            # from (EMPTY vs OVER_RANGE) across restarts (Phase R2).
+            "ALTER TABLE alert_state ADD COLUMN pending_from TEXT",
+        ],
+    ),
 ]
 
 
