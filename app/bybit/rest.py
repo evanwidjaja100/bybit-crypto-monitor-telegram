@@ -135,6 +135,9 @@ class BybitRestClient:
     async def get_spot_instruments(self, limit: int = 1000) -> list[Instrument]:
         return await self._fetch_instruments("spot", status=None, limit=limit)
 
+    async def get_inverse_instruments(self, limit: int = 1000) -> list[Instrument]:
+        return await self._fetch_instruments("inverse", status=None, limit=limit)
+
     async def get_linear_instruments(
         self, status: str = "Trading", limit: int = 1000
     ) -> list[Instrument]:

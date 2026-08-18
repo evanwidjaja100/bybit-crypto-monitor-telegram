@@ -15,6 +15,7 @@ import json
 import time
 from typing import Any, Optional
 
+from app.bybit.models import Instrument
 from app.persistence.database import Database
 
 
@@ -109,4 +110,102 @@ class Repository:
         return [dict(row) for row in rows]
 
 
-__all__ = ["Repository"]
+def row_to_instrument(row) -> "Instrument":
+    """Convert an instruments-table row/dict back into an Instrument."""
+    return Instrument(
+        category=row["category"],
+        symbol=row["symbol"],
+        base_coin=row["base_coin"],
+        quote_coin=row["quote_coin"],
+        settle_coin=row["settle_coin"],
+        contract_type=row["contract_type"],
+        status=row["status"],
+        launch_time=row["launch_time"],
+        delivery_time=row["delivery_time"],
+        is_pre_listing=bool(row["is_pre_listing"]),
+    )
+
+
+class InstrumentRepository:
+    """Persistent authoritative store for discovered instruments."""
+
+    def __init__(self, db: Database) -> None:
+        self.db = db
+
+    async def load_all(self) -> dict[tuple[str, str], "Instrument"]:
+        rows = await self.db.fetchall("SELECT * FROM instruments")
+        return {
+            (row["category"], row["symbol"]): row_to_instrument(row)
+            for row in rows
+        }
+
+    async def get(
+        self, category: str, symbol: str
+    ) -> Optional["Instrument"]:
+        row = await self.db.fetchone(
+            "SELECT * FROM instruments WHERE category = ? AND symbol = ?",
+            (category, symbol),
+        )
+        return row_to_instrument(row) if row else None
+
+    async def upsert_many(
+        self, instruments: list["Instrument"], now: int
+    ) -> None:
+        """Insert new instruments and update existing ones.
+
+        ``first_seen_at`` is written on insert only and preserved on
+        conflict, so repeated runs never fake new-listing events.
+        """
+        async with self.db.transaction():
+            for inst in instruments:
+                await self.db.execute(
+                    """
+                    INSERT INTO instruments (
+                        category, symbol, base_coin, quote_coin, settle_coin,
+                        contract_type, status, launch_time, delivery_time,
+                        is_pre_listing, first_seen_at, last_seen_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(category, symbol) DO UPDATE SET
+                        base_coin = excluded.base_coin,
+                        quote_coin = excluded.quote_coin,
+                        settle_coin = excluded.settle_coin,
+                        contract_type = excluded.contract_type,
+                        status = excluded.status,
+                        launch_time = excluded.launch_time,
+                        delivery_time = excluded.delivery_time,
+                        is_pre_listing = excluded.is_pre_listing,
+                        last_seen_at = excluded.last_seen_at
+                    """,
+                    (
+                        inst.category,
+                        inst.symbol,
+                        inst.base_coin,
+                        inst.quote_coin,
+                        inst.settle_coin,
+                        inst.contract_type,
+                        inst.status,
+                        inst.launch_time,
+                        inst.delivery_time,
+                        int(inst.is_pre_listing),
+                        now,
+                        now,
+                    ),
+                )
+
+    async def mark_removed(self, keys: list[tuple[str, str]], now: int) -> None:
+        async with self.db.transaction():
+            for category, symbol in keys:
+                await self.db.execute(
+                    "UPDATE instruments SET status = 'Removed', last_seen_at = ? "
+                    "WHERE category = ? AND symbol = ?",
+                    (now, category, symbol),
+                )
+
+    async def count_active(self) -> int:
+        row = await self.db.fetchone(
+            "SELECT COUNT(*) AS c FROM instruments WHERE status != 'Removed'"
+        )
+        return int(row["c"])  # type: ignore[index]
+
+
+__all__ = ["Repository", "InstrumentRepository", "row_to_instrument"]
