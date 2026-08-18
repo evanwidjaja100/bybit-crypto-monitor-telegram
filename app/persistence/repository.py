@@ -208,4 +208,71 @@ class InstrumentRepository:
         return int(row["c"])  # type: ignore[index]
 
 
-__all__ = ["Repository", "InstrumentRepository", "row_to_instrument"]
+class PriceSampleRepository:
+    """Persistent spot price-history store for 1h momentum anchors."""
+
+    def __init__(self, db: Database) -> None:
+        self.db = db
+
+    async def insert_sample(
+        self, category: str, symbol: str, timestamp: int, price: float
+    ) -> bool:
+        """Insert a sample; returns True only when a new row was written."""
+        cursor = await self.db.execute(
+            "INSERT OR IGNORE INTO price_samples "
+            "(category, symbol, timestamp, price) VALUES (?, ?, ?, ?)",
+            (category, symbol, timestamp, price),
+        )
+        await self.db.commit()
+        return cursor.rowcount > 0
+
+    async def latest_timestamp(
+        self, category: str, symbol: str
+    ) -> Optional[int]:
+        row = await self.db.fetchone(
+            "SELECT MAX(timestamp) AS t FROM price_samples "
+            "WHERE category = ? AND symbol = ?",
+            (category, symbol),
+        )
+        value = row["t"]  # type: ignore[index]
+        return int(value) if value is not None else None
+
+    async def find_reference(
+        self,
+        category: str,
+        symbol: str,
+        target_ts: int,
+        tolerance: float,
+    ) -> Optional[float]:
+        """Return the price closest to ``target_ts`` within tolerance."""
+        lo = int(target_ts - tolerance)
+        hi = int(target_ts + tolerance)
+        row = await self.db.fetchone(
+            """
+            SELECT price FROM price_samples
+            WHERE category = ? AND symbol = ? AND timestamp BETWEEN ? AND ?
+            ORDER BY ABS(timestamp - ?) ASC, timestamp DESC LIMIT 1
+            """,
+            (category, symbol, lo, hi, target_ts),
+        )
+        return float(row["price"]) if row else None  # type: ignore[index]
+
+    async def cleanup_older_than(self, cutoff_ts: int) -> int:
+        """Delete samples older than ``cutoff_ts``; returns rows deleted."""
+        cursor = await self.db.execute(
+            "DELETE FROM price_samples WHERE timestamp < ?", (cutoff_ts,)
+        )
+        await self.db.commit()
+        return cursor.rowcount
+
+    async def count(self) -> int:
+        row = await self.db.fetchone("SELECT COUNT(*) AS c FROM price_samples")
+        return int(row["c"])  # type: ignore[index]
+
+
+__all__ = [
+    "Repository",
+    "InstrumentRepository",
+    "PriceSampleRepository",
+    "row_to_instrument",
+]
