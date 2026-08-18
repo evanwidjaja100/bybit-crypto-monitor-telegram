@@ -1,0 +1,7 @@
+﻿DOCKER TEST RESULTS
+DATE UTC: 2026-08-18 15:22:22
+IMAGE: bybit-monitor:final (docker build --no-cache)
+BASE: python:3.14-slim
+CONTAINER PYTHON: Python 3.14.7
+FULL TEST SUITE IN PRODUCTION CONTAINER: 304 passed
+HOST PYTHON: 3.14.6 (venv, same 3.14.x line)
