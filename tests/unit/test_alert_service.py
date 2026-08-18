@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+
 import pytest
 
 from app.alerts.dispatcher import AlertDispatcher
@@ -90,3 +92,97 @@ class TestAlertService:
         assert decision.live_transition is False
         await dispatcher.stop()
         assert client.sent == []
+
+
+class TestHourlyOnlyMode:
+    """Phase F5 - IMMEDIATE_TRANSITION_ALERTS=false must not claim the
+    hourly bucket without emitting a transition message."""
+
+    async def test_hourly_only_emits_hourly_not_transition(self, tmp_path, db):
+        cfg = config(
+            tmp_path,
+            immediate_transition_alerts=False,
+            hourly_active_alerts=True,
+            alert_debounce_seconds=20,
+        )
+        client = FakeClient()
+        dispatcher = AlertDispatcher(client, Repository(db), cfg)
+        await dispatcher.start()
+        service = AlertService(
+            AlertStateMachine(cfg, AlertStateRepository(db)), dispatcher, cfg
+        )
+        try:
+            d1 = await service.process(qset("BTC"), now=0)
+            assert d1.live_transition is False
+            assert d1.hourly_update is False  # debounce still pending
+
+            d2 = await service.process(qset("BTC"), now=30)
+            assert d2.live_transition is False
+            assert d2.hourly_update is True  # hourly allowed in same bucket
+
+            await asyncio.sleep(0.2)
+            rows = await Repository(db).list_notifications()
+            assert [r["message_tag"] for r in rows] == ["hourly"]
+            assert len(client.sent) == 1
+            assert "ACTIVE-STATE" in client.sent[0]
+        finally:
+            await dispatcher.stop()
+
+    async def test_both_enabled_transition_then_no_same_bucket_hourly(
+        self, tmp_path, db
+    ):
+        cfg = config(
+            tmp_path,
+            immediate_transition_alerts=True,
+            hourly_active_alerts=True,
+            alert_debounce_seconds=0,
+        )
+        client = FakeClient()
+        dispatcher = AlertDispatcher(client, Repository(db), cfg)
+        await dispatcher.start()
+        service = AlertService(
+            AlertStateMachine(cfg, AlertStateRepository(db)), dispatcher, cfg
+        )
+        try:
+            d1 = await service.process(qset("BTC"), now=100)
+            assert d1.live_transition is True
+            assert d1.hourly_update is False  # bucket consumed by transition
+
+            d2 = await service.process(qset("BTC"), now=200)
+            assert d2.live_transition is False
+            assert d2.hourly_update is False  # no same-bucket duplicate
+
+            await asyncio.sleep(0.2)
+            rows = await Repository(db).list_notifications()
+            assert [r["message_tag"] for r in rows] == ["transition"]
+            assert len(client.sent) == 1
+        finally:
+            await dispatcher.stop()
+
+    async def test_both_disabled_state_updates_without_notifications(
+        self, tmp_path, db
+    ):
+        cfg = config(
+            tmp_path,
+            immediate_transition_alerts=False,
+            hourly_active_alerts=False,
+            alert_debounce_seconds=0,
+        )
+        client = FakeClient()
+        dispatcher = AlertDispatcher(client, Repository(db), cfg)
+        await dispatcher.start()
+        service = AlertService(
+            AlertStateMachine(cfg, AlertStateRepository(db)), dispatcher, cfg
+        )
+        try:
+            d1 = await service.process(qset("BTC"), now=100)
+            assert d1.live_transition is False
+            assert d1.hourly_update is False
+            state = await AlertStateRepository(db).load()
+            assert state["state"] == STATE_ACTIVE_RANGE  # state still updates
+            await asyncio.sleep(0.2)
+            assert client.sent == []
+            rows = await Repository(db).list_notifications()
+            assert rows == []
+        finally:
+            await dispatcher.stop()

@@ -139,10 +139,12 @@ class AlertStateMachine:
                             f"{state.get('pending_from') or prev_state} -> {new_state}"
                         )
                         state["last_transition_at"] = now
+                        # A debounced transition owns this hourly bucket.
+                        state["last_hourly_bucket"] = hourly_bucket(now)
+                    # Else: the transition is silent, so the hourly bucket
+                    # is NOT consumed - the hourly logic below may emit.
                     state["pending_since"] = None
                     state["pending_from"] = None
-                    # The debounced transition owns this hourly bucket.
-                    state["last_hourly_bucket"] = hourly_bucket(now)
         else:
             # Leaving ACTIVE_RANGE cancels any pending transition.
             state["pending_since"] = None
