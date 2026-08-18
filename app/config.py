@@ -23,6 +23,9 @@ _NUMERIC_NON_NEGATIVE = (
     "ws_heartbeat_interval_seconds",
     "ws_stale_seconds",
     "health_summary_seconds",
+    "dispatcher_poll_seconds",
+    "notification_max_age_seconds",
+    "listing_notification_max_age_seconds",
 )
 
 _NUMERIC_POSITIVE = (
@@ -32,6 +35,7 @@ _NUMERIC_POSITIVE = (
     "ws_heartbeat_interval_seconds",
     "ws_stale_seconds",
     "spot_history_retention_seconds",
+    "dispatcher_poll_seconds",
 )
 
 
@@ -108,6 +112,13 @@ class Settings(BaseSettings):
     # --- Observability ---
     log_level: str = "INFO"
     health_summary_seconds: float = 60.0
+
+    # --- Dispatcher / delivery ---
+    dispatcher_poll_seconds: float = 2.0
+    # Retryable alerts expire after this age; listing alerts stay longer
+    # because a listing notification remains relevant.
+    notification_max_age_seconds: float = 7200.0  # 2 hours
+    listing_notification_max_age_seconds: float = 86400.0  # 24 hours
 
     @model_validator(mode="after")
     def _validate_ranges(self) -> "Settings":

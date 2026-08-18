@@ -128,9 +128,9 @@ class HealthMonitor:
                 state.notes.append("telegram unhealthy")
 
         if self.dispatcher is not None:
-            queue = getattr(self.dispatcher, "queue", None)
-            if queue is not None:
-                state.telegram_queue_depth = queue.qsize()
+            depth = getattr(self.dispatcher, "depth", None)
+            if callable(depth):
+                state.telegram_queue_depth = await depth()
 
         if self.registry is not None:
             await self._collect_counts(state)

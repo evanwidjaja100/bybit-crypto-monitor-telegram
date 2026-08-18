@@ -83,21 +83,78 @@ class Repository:
             await self.db.commit()
         return cursor.lastrowid  # type: ignore[return-value]
 
-    async def mark_notification_sent(self, notification_id: int) -> None:
+    async def mark_notification_sent(
+        self, notification_id: int, commit: bool = True
+    ) -> None:
         await self.db.execute(
             "UPDATE outgoing_notifications SET status = 'sent', sent_at = ? "
             "WHERE id = ?",
             (int(time.time()), notification_id),
         )
+        if commit:
+            await self.db.commit()
+
+    async def mark_notification_retry(
+        self,
+        notification_id: int,
+        error: str,
+        next_attempt_at: int,
+        now: Optional[int] = None,
+    ) -> None:
+        """Record a transient failure and schedule the next attempt."""
+        now = now if now is not None else int(time.time())
+        await self.db.execute(
+            "UPDATE outgoing_notifications SET "
+            "status = 'retry', error = ?, attempt_count = attempt_count + 1, "
+            "last_attempt_at = ?, next_attempt_at = ? WHERE id = ?",
+            (error[:500], now, next_attempt_at, notification_id),
+        )
         await self.db.commit()
 
-    async def mark_notification_failed(self, notification_id: int, error: str) -> None:
+    async def mark_notification_dead(
+        self, notification_id: int, error: str
+    ) -> None:
         await self.db.execute(
-            "UPDATE outgoing_notifications SET status = 'failed', error = ? "
+            "UPDATE outgoing_notifications SET status = 'dead', error = ? "
             "WHERE id = ?",
             (error[:500], notification_id),
         )
         await self.db.commit()
+
+    async def due_notifications(self, limit: int = 100) -> list[dict[str, Any]]:
+        """pending + retry rows that may be attempted right now."""
+        rows = await self.db.fetchall(
+            "SELECT * FROM outgoing_notifications WHERE status IN ('pending', 'retry') "
+            "AND (next_attempt_at IS NULL OR next_attempt_at <= ?) "
+            "ORDER BY id ASC LIMIT ?",
+            (int(time.time()), limit),
+        )
+        return [dict(row) for row in rows]
+
+    async def expire_notifications(
+        self,
+        alert_max_age: int,
+        listing_max_age: int,
+        now: Optional[int] = None,
+    ) -> int:
+        """Mark stale pending/retry rows dead (returns affected row count)."""
+        now = now if now is not None else int(time.time())
+        cursor = await self.db.execute(
+            "UPDATE outgoing_notifications SET status = 'dead', error = 'expired' "
+            "WHERE status IN ('pending', 'retry') "
+            "AND ((origin_type = 'listing' AND created_at < ?) "
+            "     OR (COALESCE(origin_type, '') != 'listing' AND created_at < ?))",
+            (now - listing_max_age, now - alert_max_age),
+        )
+        await self.db.commit()
+        return cursor.rowcount  # type: ignore[return-value]
+
+    async def count_unsent(self) -> int:
+        row = await self.db.fetchone(
+            "SELECT COUNT(*) AS c FROM outgoing_notifications "
+            "WHERE status IN ('pending', 'retry')"
+        )
+        return int(row["c"])  # type: ignore[index]
 
     async def list_notifications(
         self, limit: int = 100, status: Optional[str] = None
