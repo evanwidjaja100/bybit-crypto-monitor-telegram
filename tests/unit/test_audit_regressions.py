@@ -848,7 +848,9 @@ class TestP21SpotAnchorTolerance:
         cfg = make_cfg(tmp_path, spot_anchor_tolerance_seconds=7)
         # Constructed exactly like main.py wires it.
         history = SpotHistory(
-            PriceSampleRepository(db), sample_seconds=cfg.spot_sample_seconds
+            PriceSampleRepository(db),
+            sample_seconds=cfg.spot_sample_seconds,
+            tolerance_seconds=cfg.spot_anchor_tolerance_seconds,
         )
         assert history.tolerance_seconds == 7
 

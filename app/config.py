@@ -106,7 +106,6 @@ class Settings(BaseSettings):
     # --- WebSocket tuning ---
     ws_heartbeat_interval_seconds: float = 20.0
     ws_stale_seconds: float = 60.0
-    ws_reconnect_max_attempts: int = 20
     ws_subscribe_batch_size: int = 10
 
     # --- Observability ---

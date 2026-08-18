@@ -179,18 +179,30 @@ class BybitWebSocketClient:
         missing = sorted(self._symbols - self._subscribed)
         if not missing:
             return
+        await self._send_topic_ops(SUBSCRIBE_OP, missing)
+
+    async def unsubscribe(self, symbols: Iterable[str]) -> None:
+        """Unsubscribe from symbols no longer desired (batched)."""
+        if self._ws is None:
+            return
+        stale = sorted(set(symbols) & self._subscribed)
+        if not stale:
+            return
+        await self._send_topic_ops("unsubscribe", stale)
+
+    async def _send_topic_ops(self, op: str, symbols: Iterable[str]) -> None:
+        symbol_list = list(symbols)
         batch_size = self.config.ws_subscribe_batch_size
-        for start in range(0, len(missing), batch_size):
-            batch = missing[start : start + batch_size]
+        for start in range(0, len(symbol_list), batch_size):
+            batch = symbol_list[start : start + batch_size]
             topics = [f"tickers.{symbol}" for symbol in batch]
-            await self._ws.send(
-                json.dumps({"op": SUBSCRIBE_OP, "args": topics})
-            )
-            self._subscribed.update(batch)
+            await self._ws.send(json.dumps({"op": op, "args": topics}))
+            if op == SUBSCRIBE_OP:
+                self._subscribed.update(batch)
+            else:
+                self._subscribed.difference_update(batch)
         logger.info(
-            "event=ws_subscribed stream=%s topics=%d",
-            self.category,
-            len(missing),
+            "event=ws_%s stream=%s topics=%d", op, self.category, len(symbol_list)
         )
 
     # ------------------------------------------------------------------
@@ -275,18 +287,36 @@ class WebSocketManager:
         return callback
 
     async def sync_subscriptions(self) -> int:
-        """Rebuild ticker topics from the registry for both streams."""
+        """Reconcile ticker topics against the registry for both streams.
+
+        Filters: Trading status only; Spot topics require ``enable_spot``;
+        Linear symbols are subscribed only when their settle coin matches
+        an enabled linear flag. Symbols that are no longer desired are
+        unsubscribed so stale subscriptions cannot accumulate.
+        """
         instruments = await self.registry.repo.load_all()
         total = 0
         for category, client in self.clients.items():
-            symbols = {
-                inst.symbol
-                for inst in instruments.values()
-                if inst.category == category and inst.status == "Trading"
-            }
-            client.set_symbols(symbols)
+            desired = set()
+            for inst in instruments.values():
+                if inst.category != category or inst.status != "Trading":
+                    continue
+                if category == "spot":
+                    if self.config.enable_spot:
+                        desired.add(inst.symbol)
+                elif inst.settle_coin == "USDT":
+                    if self.config.enable_linear_usdt:
+                        desired.add(inst.symbol)
+                elif inst.settle_coin == "USDC":
+                    if self.config.enable_linear_usdc:
+                        desired.add(inst.symbol)
+                elif self.config.enable_inverse:
+                    desired.add(inst.symbol)
+            previous = client._subscribed
+            client.set_symbols(desired)
             await client.resubscribe()
-            total += len(symbols)
+            await client.unsubscribe(previous - desired)
+            total += len(desired)
         return total
 
     async def start(self, stop_event: asyncio.Event) -> list[asyncio.Task]:

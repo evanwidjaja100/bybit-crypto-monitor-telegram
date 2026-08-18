@@ -152,6 +152,7 @@ class Application:
             SpotHistory(
                 PriceSampleRepository(self.db),
                 sample_seconds=cfg.spot_sample_seconds,
+                tolerance_seconds=cfg.spot_anchor_tolerance_seconds,
             ),
         )
         self.evaluator = MomentumEvaluator(
@@ -190,14 +191,12 @@ class Application:
             self.ticker_poll = TickerPollService(
                 self.rest, self.registry, self.price_engine, cfg
             )
-            self._tasks.append(
-                self._spawn(self.ticker_poll.run_forever(self.stop_event))
-            )
-        self._tasks.append(self._spawn(self._market_loop()))
-        self._tasks.append(self._spawn(self.discovery.run_forever(self.stop_event)))
-        self._tasks.append(self._spawn(self.health.run_forever(self.stop_event)))
+            self._spawn(self.ticker_poll.run_forever(self.stop_event))
+        self._spawn(self._market_loop())
+        self._spawn(self.discovery.run_forever(self.stop_event))
+        self._spawn(self.health.run_forever(self.stop_event))
         if cfg.listing_notifications_enabled:
-            self._tasks.append(self._spawn(self._announcement_loop()))
+            self._spawn(self._announcement_loop())
 
     async def _stop_services(self) -> None:
         if self.ws_manager is not None:
