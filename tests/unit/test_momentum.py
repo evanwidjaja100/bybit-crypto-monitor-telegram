@@ -69,6 +69,28 @@ class TestLinearBoundaryRules:
         change = MomentumEngine.linear_change(105.001, 100.0)
         assert MomentumEngine.qualifies(change) is True
 
+    def test_100_to_105_000000001_qualifies(self):
+        """Plan 7.3: 100 -> 105.000000001 must qualify (raw > 5.0)."""
+        change = MomentumEngine.linear_change(105.000000001, 100.0)
+        assert change is not None
+        assert change > 5.0
+        assert MomentumEngine.qualifies(change) is True
+
+    def test_100_to_105_0000000004_qualifies(self):
+        """No pre-qualification rounding: a raw change of 5.0000000004
+        must still qualify even though it rounds to 5.0 at 9 decimals."""
+        change = MomentumEngine.linear_change(105.0000000004, 100.0)
+        assert change is not None
+        assert change > 5.0
+        assert round(change, 9) == 5.0
+        assert MomentumEngine.qualifies(change) is True
+
+    def test_raw_change_is_never_rounded_in_calculation(self):
+        change = MomentumEngine.linear_change(105.0000000004, 100.0)
+        assert change is not None
+        assert change > 5.0
+        assert abs(change - 5.0000000004) < 1e-10
+
     def test_100_to_110_is_plus_10(self):
         change = MomentumEngine.linear_change(110.0, 100.0)
         assert round(change, 3) == 10.000
@@ -168,6 +190,35 @@ class TestSpotMomentumEvaluation:
             now,
         )
         assert value.status == STATUS_OK
+        assert MomentumEngine.qualifies(value.change_1h) is True
+
+    async def test_spot_change_not_pre_rounded(self, momentum, spot_history):
+        """End-to-end: prices -> change -> qualification without rounding."""
+        now = 20_000
+        await spot_history.record("spot", "BTCUSDT", now - HOUR, 100.0)
+        value = await momentum.evaluate(
+            spot_inst(),
+            Ticker(category="spot", symbol="BTCUSDT", last_price=105.0000000004),
+            now,
+        )
+        assert value.status == STATUS_OK
+        assert value.change_1h > 5.0
+        assert MomentumEngine.qualifies(value.change_1h) is True
+
+    async def test_linear_end_to_end_not_pre_rounded(self, momentum):
+        """End-to-end: ticker prices -> change -> qualification."""
+        value = await momentum.evaluate(
+            linear_inst(),
+            Ticker(
+                category="linear",
+                symbol="BTCUSDT",
+                last_price=105.0000000004,
+                prev_price_1h=100.0,
+            ),
+            20_000,
+        )
+        assert value.status == STATUS_OK
+        assert value.change_1h > 5.0
         assert MomentumEngine.qualifies(value.change_1h) is True
 
 

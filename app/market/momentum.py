@@ -16,6 +16,7 @@ from __future__ import annotations
 import logging
 import time
 from dataclasses import dataclass
+from decimal import Decimal
 from typing import Optional
 
 from app.bybit.models import Instrument, Ticker
@@ -110,6 +111,18 @@ class MomentumEngine:
     # Pure math helpers
     # ------------------------------------------------------------------
     @staticmethod
+    def _raw_change(last: float, reference: float) -> float:
+        """``(last / reference - 1) * 100`` with no rounding.
+
+        The division happens in exact decimal arithmetic (built from the
+        shortest round-trip repr of the float inputs) so a decimal-exact
+        5.00% stays exactly 5.0, while 5.0000000004 stays > 5.0. Binary
+        float division would turn "exactly 5%" into 5.000000000000004.
+        """
+        quotient = Decimal(str(last)) / Decimal(str(reference))
+        return float((quotient - Decimal(1)) * Decimal(100))
+
+    @staticmethod
     def linear_change(
         last_price: Optional[float], prev_price_1h: Optional[float]
     ) -> Optional[float]:
@@ -117,7 +130,7 @@ class MomentumEngine:
             return None
         if last_price <= 0 or prev_price_1h <= 0:
             return None
-        return round((last_price / prev_price_1h - 1.0) * 100.0, 9)
+        return MomentumEngine._raw_change(last_price, prev_price_1h)
 
     @staticmethod
     def spot_change(
@@ -127,18 +140,16 @@ class MomentumEngine:
             return None
         if last_price <= 0 or anchor <= 0:
             return None
-        return round((last_price / anchor - 1.0) * 100.0, 9)
+        return MomentumEngine._raw_change(last_price, anchor)
 
     @staticmethod
     def qualifies(
         change_1h: Optional[float], threshold: float = 5.0
     ) -> bool:
-        """Strictly-greater-than comparison, never rounded.
+        """Strictly-greater-than comparison on the raw value.
 
-        ``change_1h`` is already rounded to 9 decimals at computation time;
-        rounding it again before the threshold comparison would make
-        exactly 5.0000001 look like 5.000000 and silently miss qualifying
-        markets. The comparison must be strict ``>`` on the raw values.
+        The threshold decision is made on the unrounded float; rounding
+        happens only at display time (formatter/logs), never here.
         """
         if change_1h is None:
             return False
