@@ -11,19 +11,29 @@ Concrete repositories are expanded phase-by-phase:
 
 from __future__ import annotations
 
+import contextlib
 import json
 import time
-from typing import Any, Optional
+from typing import Any, AsyncIterator, Optional
 
 from app.bybit.models import Instrument
 from app.persistence.database import Database
 
 
 class Repository:
-    """Shared data-access helpers over the SQLite database."""
+    """Read/write access to the notification outbox and misc key-values."""
 
     def __init__(self, db: Database) -> None:
         self.db = db
+
+    @contextlib.asynccontextmanager
+    async def _committed(self, commit: bool) -> AsyncIterator[None]:
+        """Wrap a write in a transaction when it must commit on its own."""
+        if commit:
+            async with self.db.transaction():
+                yield
+        else:
+            yield
 
     # ------------------------------------------------------------------
     # Generic key/value state
@@ -43,20 +53,20 @@ class Repository:
 
     async def kv_set(self, key: str, value: str) -> None:
         now = int(time.time())
-        await self.db.execute(
-            "INSERT INTO kv (key, value, updated_at) VALUES (?, ?, ?) "
-            "ON CONFLICT(key) DO UPDATE SET value = excluded.value, "
-            "updated_at = excluded.updated_at",
-            (key, value, now),
-        )
-        await self.db.commit()
+        async with self.db.transaction():
+            await self.db.execute(
+                "INSERT INTO kv (key, value, updated_at) VALUES (?, ?, ?) "
+                "ON CONFLICT(key) DO UPDATE SET value = excluded.value, "
+                "updated_at = excluded.updated_at",
+                (key, value, now),
+            )
 
     async def kv_set_json(self, key: str, value: Any) -> None:
         await self.kv_set(key, json.dumps(value, sort_keys=True))
 
     async def kv_delete(self, key: str) -> None:
-        await self.db.execute("DELETE FROM kv WHERE key = ?", (key,))
-        await self.db.commit()
+        async with self.db.transaction():
+            await self.db.execute("DELETE FROM kv WHERE key = ?", (key,))
 
     # ------------------------------------------------------------------
     # Notification records
@@ -67,31 +77,107 @@ class Repository:
         message: str,
         status: str = "pending",
         created_at: Optional[int] = None,
+        dedupe_key: Optional[str] = None,
+        origin_type: Optional[str] = None,
+        origin_key: Optional[str] = None,
+        commit: bool = True,
     ) -> int:
         created_at = created_at if created_at is not None else int(time.time())
-        cursor = await self.db.execute(
-            "INSERT INTO outgoing_notifications "
-            "(message_tag, message, created_at, status) VALUES (?, ?, ?, ?)",
-            (message_tag, message, created_at, status),
-        )
-        await self.db.commit()
+        async with self._committed(commit):
+            cursor = await self.db.execute(
+                "INSERT INTO outgoing_notifications "
+                "(message_tag, message, created_at, status, dedupe_key, "
+                "origin_type, origin_key) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (message_tag, message, created_at, status, dedupe_key, origin_type, origin_key),
+            )
         return cursor.lastrowid  # type: ignore[return-value]
 
-    async def mark_notification_sent(self, notification_id: int) -> None:
-        await self.db.execute(
-            "UPDATE outgoing_notifications SET status = 'sent', sent_at = ? "
-            "WHERE id = ?",
-            (int(time.time()), notification_id),
-        )
-        await self.db.commit()
+    async def mark_notification_sent(
+        self, notification_id: int, commit: bool = True
+    ) -> None:
+        async with self._committed(commit):
+            await self.db.execute(
+                "UPDATE outgoing_notifications SET status = 'sent', sent_at = ? "
+                "WHERE id = ?",
+                (int(time.time()), notification_id),
+            )
 
-    async def mark_notification_failed(self, notification_id: int, error: str) -> None:
-        await self.db.execute(
-            "UPDATE outgoing_notifications SET status = 'failed', error = ? "
-            "WHERE id = ?",
-            (error[:500], notification_id),
+    async def mark_notification_retry(
+        self,
+        notification_id: int,
+        error: str,
+        next_attempt_at: int,
+        now: Optional[int] = None,
+    ) -> None:
+        """Record a transient failure and schedule the next attempt."""
+        now = now if now is not None else int(time.time())
+        async with self.db.transaction():
+            await self.db.execute(
+                "UPDATE outgoing_notifications SET "
+                "status = 'retry', error = ?, attempt_count = attempt_count + 1, "
+                "last_attempt_at = ?, next_attempt_at = ? WHERE id = ?",
+                (error[:500], now, next_attempt_at, notification_id),
+            )
+
+    async def mark_notification_dead(
+        self, notification_id: int, error: str
+    ) -> None:
+        async with self.db.transaction():
+            await self.db.execute(
+                "UPDATE outgoing_notifications SET status = 'dead', error = ? "
+                "WHERE id = ?",
+                (error[:500], notification_id),
+            )
+    async def due_notifications(self, limit: int = 100) -> list[dict[str, Any]]:
+        """pending + retry rows that may be attempted right now."""
+        rows = await self.db.fetchall(
+            "SELECT * FROM outgoing_notifications WHERE status IN ('pending', 'retry') "
+            "AND (next_attempt_at IS NULL OR next_attempt_at <= ?) "
+            "ORDER BY id ASC LIMIT ?",
+            (int(time.time()), limit),
         )
-        await self.db.commit()
+        return [dict(row) for row in rows]
+
+    async def expire_notifications(
+        self,
+        alert_max_age: int,
+        listing_max_age: int,
+        now: Optional[int] = None,
+    ) -> int:
+        """Mark stale pending/retry rows dead (returns affected row count)."""
+        now = now if now is not None else int(time.time())
+        async with self.db.transaction():
+            cursor = await self.db.execute(
+                "UPDATE outgoing_notifications SET status = 'dead', error = 'expired' "
+                "WHERE status IN ('pending', 'retry') "
+                "AND ((origin_type = 'listing' AND created_at < ?) "
+                "     OR (COALESCE(origin_type, '') != 'listing' AND created_at < ?))",
+                (now - listing_max_age, now - alert_max_age),
+            )
+        return cursor.rowcount  # type: ignore[return-value]
+
+    async def count_unsent(self) -> int:
+        row = await self.db.fetchone(
+            "SELECT COUNT(*) AS c FROM outgoing_notifications "
+            "WHERE status IN ('pending', 'retry')"
+        )
+        return int(row["c"])  # type: ignore[index]
+
+    async def find_notification_by_dedupe(
+        self, dedupe_key: str
+    ) -> Optional[dict[str, Any]]:
+        row = await self.db.fetchone(
+            "SELECT * FROM outgoing_notifications WHERE dedupe_key = ?",
+            (dedupe_key,),
+        )
+        return dict(row) if row else None
+
+    async def mark_listing_sent(self, event_key: str, commit: bool = True) -> None:
+        async with self._committed(commit):
+            await self.db.execute(
+                "UPDATE listing_events SET telegram_sent = 1 WHERE event_key = ?",
+                (event_key,),
+            )
 
     async def list_notifications(
         self, limit: int = 100, status: Optional[str] = None
@@ -223,6 +309,7 @@ class AlertStateRepository:
                 "updated_at": 0,
                 "last_transition_at": None,
                 "pending_since": None,
+                "pending_from": None,
                 "last_hourly_bucket": None,
                 "last_composition_at": None,
             }
@@ -235,21 +322,48 @@ class AlertStateRepository:
         updated_at: int,
         last_transition_at: Optional[int],
         pending_since: Optional[int],
+        pending_from: Optional[str],
         last_hourly_bucket: Optional[str],
         last_composition_at: Optional[int],
     ) -> None:
+        async with self.db.transaction():
+            await self.save_no_commit(
+                state,
+                fingerprint,
+                updated_at,
+                last_transition_at,
+                pending_since,
+                pending_from,
+                last_hourly_bucket,
+                last_composition_at,
+            )
+    async def save_no_commit(
+        self,
+        state: str,
+        fingerprint: tuple[str, ...],
+        updated_at: int,
+        last_transition_at: Optional[int],
+        pending_since: Optional[int],
+        pending_from: Optional[str],
+        last_hourly_bucket: Optional[str],
+        last_composition_at: Optional[int],
+    ) -> None:
+        """Same upsert as :meth:`save` but without committing, so callers
+        can combine it with other writes in one transaction."""
         await self.db.execute(
             """
             INSERT INTO alert_state (
                 id, state, fingerprint, updated_at, last_transition_at,
-                pending_since, last_hourly_bucket, last_composition_at
-            ) VALUES (1, ?, ?, ?, ?, ?, ?, ?)
+                pending_since, pending_from, last_hourly_bucket,
+                last_composition_at
+            ) VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(id) DO UPDATE SET
                 state = excluded.state,
                 fingerprint = excluded.fingerprint,
                 updated_at = excluded.updated_at,
                 last_transition_at = excluded.last_transition_at,
                 pending_since = excluded.pending_since,
+                pending_from = excluded.pending_from,
                 last_hourly_bucket = excluded.last_hourly_bucket,
                 last_composition_at = excluded.last_composition_at
             """,
@@ -259,11 +373,11 @@ class AlertStateRepository:
                 updated_at,
                 last_transition_at,
                 pending_since,
+                pending_from,
                 last_hourly_bucket,
                 last_composition_at,
             ),
         )
-        await self.db.commit()
 
 
 class ListingEventRepository:
@@ -281,13 +395,13 @@ class ListingEventRepository:
         now: int,
     ) -> Optional[dict[str, Any]]:
         """Insert a listing event; returns it only when newly created."""
-        cursor = await self.db.execute(
-            "INSERT OR IGNORE INTO listing_events "
-            "(event_key, category, symbol, event_type, first_seen_at, telegram_sent) "
-            "VALUES (?, ?, ?, ?, ?, 0)",
-            (event_key, category, symbol, event_type, now),
-        )
-        await self.db.commit()
+        async with self.db.transaction():
+            cursor = await self.db.execute(
+                "INSERT OR IGNORE INTO listing_events "
+                "(event_key, category, symbol, event_type, first_seen_at, telegram_sent) "
+                "VALUES (?, ?, ?, ?, ?, 0)",
+                (event_key, category, symbol, event_type, now),
+            )
         if cursor.rowcount == 0:
             return None
         return {
@@ -300,11 +414,11 @@ class ListingEventRepository:
         }
 
     async def mark_sent(self, event_key: str) -> None:
-        await self.db.execute(
-            "UPDATE listing_events SET telegram_sent = 1 WHERE event_key = ?",
-            (event_key,),
-        )
-        await self.db.commit()
+        async with self.db.transaction():
+            await self.db.execute(
+                "UPDATE listing_events SET telegram_sent = 1 WHERE event_key = ?",
+                (event_key,),
+            )
 
     async def unsent(self) -> list[dict[str, Any]]:
         """Events that were never notified (delisted events are silent)."""
@@ -332,12 +446,12 @@ class PriceSampleRepository:
         self, category: str, symbol: str, timestamp: int, price: float
     ) -> bool:
         """Insert a sample; returns True only when a new row was written."""
-        cursor = await self.db.execute(
-            "INSERT OR IGNORE INTO price_samples "
-            "(category, symbol, timestamp, price) VALUES (?, ?, ?, ?)",
-            (category, symbol, timestamp, price),
-        )
-        await self.db.commit()
+        async with self.db.transaction():
+            cursor = await self.db.execute(
+                "INSERT OR IGNORE INTO price_samples "
+                "(category, symbol, timestamp, price) VALUES (?, ?, ?, ?)",
+                (category, symbol, timestamp, price),
+            )
         return cursor.rowcount > 0
 
     async def latest_timestamp(
@@ -373,10 +487,10 @@ class PriceSampleRepository:
 
     async def cleanup_older_than(self, cutoff_ts: int) -> int:
         """Delete samples older than ``cutoff_ts``; returns rows deleted."""
-        cursor = await self.db.execute(
-            "DELETE FROM price_samples WHERE timestamp < ?", (cutoff_ts,)
-        )
-        await self.db.commit()
+        async with self.db.transaction():
+            cursor = await self.db.execute(
+                "DELETE FROM price_samples WHERE timestamp < ?", (cutoff_ts,)
+            )
         return cursor.rowcount
 
     async def count(self) -> int:

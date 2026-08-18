@@ -364,7 +364,7 @@ class TestManager:
 
         async with serve(handler, "127.0.0.1", 0) as server:
             port = server.sockets[0].getsockname()[1]
-            cfg = ws_config(tmp_path, port)
+            cfg = ws_config(tmp_path, port, enable_linear_usdc=False)
             repo = InstrumentRepository(db)
             from app.bybit.models import Instrument
 
@@ -380,7 +380,16 @@ class TestManager:
                         category="spot", symbol="OLDUSDT", base_coin="OLD", status="Removed"
                     ),
                     Instrument(
-                        category="linear", symbol="BTCUSDT", base_coin="BTC", status="Trading"
+                        category="linear", symbol="BTCUSDT", base_coin="BTC",
+                        status="Trading", settle_coin="USDT",
+                    ),
+                    Instrument(
+                        category="linear", symbol="USDCX", base_coin="USDCX",
+                        status="Trading", settle_coin="USDC",
+                    ),
+                    Instrument(
+                        category="linear", symbol="ETHUSDC", base_coin="ETH",
+                        status="Trading", settle_coin="USDC",
                     ),
                 ],
                 now=100,
@@ -392,12 +401,72 @@ class TestManager:
             stop = asyncio.Event()
             tasks = await manager.start(stop)
             count = await manager.sync_subscriptions()
-            assert count == 3  # spot: 2 trading + linear: 1 trading
+            # spot: 2 trading, linear: USDT-settled only (USDC excluded by
+            # default config; Removed status excluded).
+            assert count == 3
             assert await wait_until(
                 lambda: any(
                     d.get("op") == "subscribe"
                     and sorted(d.get("args", []))
                     == ["tickers.BTCUSDT", "tickers.ETHUSDT"]
+                    for d in received
+                )
+            )
+            stop.set()
+            await asyncio.gather(*tasks, return_exceptions=True)
+
+    async def test_unsubscribes_removed_symbols(self, tmp_path, db):
+        received: list[dict] = []
+
+        async def handler(websocket):
+            try:
+                async for message in websocket:
+                    data = json.loads(message)
+                    received.append(data)
+            except Exception:
+                pass
+
+        async with serve(handler, "127.0.0.1", 0) as server:
+            port = server.sockets[0].getsockname()[1]
+            cfg = ws_config(tmp_path, port)
+            repo = InstrumentRepository(db)
+            from app.bybit.models import Instrument
+
+            await repo.upsert_many(
+                [
+                    Instrument(
+                        category="spot", symbol="BTCUSDT", base_coin="BTC", status="Trading"
+                    ),
+                    Instrument(
+                        category="spot", symbol="ETHUSDT", base_coin="ETH", status="Trading"
+                    ),
+                ],
+                now=100,
+            )
+            price_engine = PriceEngine(cfg)
+            manager = WebSocketManager(
+                InstrumentRegistry(repo), price_engine, cfg
+            )
+            stop = asyncio.Event()
+            tasks = await manager.start(stop)
+            assert await manager.sync_subscriptions() == 2
+            await wait_until(
+                lambda: any(d.get("op") == "subscribe" for d in received)
+            )
+            # ETHUSDT is no longer desired (removed from the registry).
+            await repo.upsert_many(
+                [
+                    Instrument(
+                        category="spot", symbol="ETHUSDT", base_coin="ETH", status="Removed"
+                    )
+                ],
+                now=101,
+            )
+            assert await manager.sync_subscriptions() == 1
+            assert await wait_until(
+                lambda: any(
+                    d.get("op") == "unsubscribe"
+                    and sorted(d.get("args", [])) == ["tickers.ETHUSDT"]
                     for d in received
                 )
             )

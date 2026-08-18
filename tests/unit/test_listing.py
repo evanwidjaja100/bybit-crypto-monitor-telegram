@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import pytest
+
 from app.bybit.models import Announcement
 from app.market.discovery import DiscoveryResult, RegistryEvent
 from app.market.listing import (
@@ -10,8 +12,9 @@ from app.market.listing import (
     EVENT_PRELAUNCH,
     EVENT_TRADING,
     ListingTracker,
+    listing_dedupe_key,
 )
-from app.persistence.repository import ListingEventRepository
+from app.persistence.repository import ListingEventRepository, Repository
 from tests.conftest import make_settings
 
 
@@ -195,11 +198,13 @@ class TestStartupRetry:
             now=100,
         )
         assert len(notify.sent) == 1
-        # Second tracker = restart; previously sent events must not resend.
+        # Delivery was never confirmed (no dispatcher/outbox in this test),
+        # so a restart re-notifies the still-unsent event exactly once.
         tr2, notify2 = tracker(tmp_path, db)
         count = await tr2.reconcile_unsent()
-        assert count == 0
-        assert notify2.sent == []
+        assert count == 1
+        assert len(notify2.sent) == 1
+        assert notify2.sent[0]["event_key"] == notify.sent[0]["event_key"]
 
     async def test_notifications_disabled_events_retried_later(self, tmp_path, db):
         tr, notify = tracker(tmp_path, db, notifications=False)
@@ -214,8 +219,6 @@ class TestStartupRetry:
         assert notify2.sent[0]["symbol"] == "ABCUSDT"
 
     async def test_event_persisted_before_notify_failure(self, tmp_path, db):
-        import pytest
-
         repo = ListingEventRepository(db)
         cfg = config(tmp_path)
         failed = False
@@ -234,3 +237,123 @@ class TestStartupRetry:
         rows = await repo.list_all()
         assert rows[0]["event_type"] == EVENT_TRADING
         assert failed is True
+
+
+class TestOutboxReconcile:
+    """Phase R5 - unsent events are reconciled with the durable outbox."""
+
+    class OutboxNotifier:
+        """Production-style notify boundary: enqueue with origin metadata."""
+
+        def __init__(self, outbox: Repository) -> None:
+            self.outbox = outbox
+            self.sent: list[dict] = []
+
+        async def __call__(self, event: dict) -> None:
+            self.sent.append(event)
+            await self.outbox.insert_outgoing_notification(
+                "listing",
+                "listing-msg",
+                dedupe_key=listing_dedupe_key(event["event_key"]),
+                origin_type="listing",
+                origin_key=event["event_key"],
+            )
+
+    def outbox_tracker(self, tmp_path, db):
+        outbox = Repository(db)
+        notify = self.OutboxNotifier(outbox)
+        cfg = config(tmp_path, listing_notifications_enabled=True)
+        tracker = ListingTracker(
+            ListingEventRepository(db), cfg, notify=notify, outbox=outbox
+        )
+        return tracker, notify, outbox
+
+    async def test_pending_outbox_row_is_left_to_dispatcher(self, tmp_path, db):
+        tr, notify, outbox = self.outbox_tracker(tmp_path, db)
+        created = await tr.handle_registry(
+            result(registry_event("ABCUSDT", "new", new_status="Trading")),
+            now=100,
+        )
+        key = created[0]["event_key"]
+        assert len(await outbox.list_notifications()) == 1
+        # Restart: the pending row exists, so reconcile must not enqueue
+        # a duplicate and must not mark the event sent.
+        tr2, notify2, outbox2 = self.outbox_tracker(tmp_path, db)
+        count = await tr2.reconcile_unsent()
+        assert count == 0
+        assert notify2.sent == []
+        rows = await outbox2.list_notifications()
+        assert len(rows) == 1
+        assert rows[0]["dedupe_key"] == listing_dedupe_key(key)
+        assert rows[0]["status"] == "pending"
+        event = (await ListingEventRepository(db).list_all())[0]
+        assert event["telegram_sent"] == 0
+
+    async def test_sent_outbox_row_repairs_stale_listing_flag(self, tmp_path, db):
+        tr, _, outbox = self.outbox_tracker(tmp_path, db)
+        created = await tr.handle_registry(
+            result(registry_event("ABCUSDT", "new", new_status="Trading")),
+            now=100,
+        )
+        key = created[0]["event_key"]
+        row = (await outbox.list_notifications())[0]
+        # Delivery succeeded but the listing flag was lost (crash between
+        # the two writes on an older version).
+        await outbox.mark_notification_sent(row["id"])
+        await db.execute(
+            "UPDATE listing_events SET telegram_sent = 0 WHERE event_key = ?",
+            (key,),
+        )
+        await db.commit()
+        tr2, notify2, _ = self.outbox_tracker(tmp_path, db)
+        count = await tr2.reconcile_unsent()
+        assert count == 1
+        assert notify2.sent == []
+        event = (await ListingEventRepository(db).list_all())[0]
+        assert event["telegram_sent"] == 1
+
+    async def test_missing_outbox_row_is_created(self, tmp_path, db):
+        repo = ListingEventRepository(db)
+        outbox = Repository(db)
+        cfg = config(tmp_path, listing_notifications_enabled=True)
+        # Simulate a crash between event recording and outbox creation.
+        async def crashed_notify(event):
+            raise RuntimeError("crash before outbox insert")
+
+        tr = ListingTracker(repo, cfg, notify=crashed_notify, outbox=outbox)
+        with pytest.raises(RuntimeError):
+            await tr.handle_registry(
+                result(registry_event("ABCUSDT", "new", new_status="Trading")),
+                now=100,
+            )
+        assert len(await outbox.list_notifications()) == 0
+
+        notify = self.OutboxNotifier(outbox)
+        tr2 = ListingTracker(repo, cfg, notify=notify, outbox=outbox)
+        count = await tr2.reconcile_unsent()
+        assert count == 1
+        assert len(notify.sent) == 1
+        rows = await outbox.list_notifications()
+        assert len(rows) == 1
+        assert rows[0]["dedupe_key"] == "listing:linear:ABCUSDT:trading"
+        assert rows[0]["origin_type"] == "listing"
+        assert rows[0]["origin_key"] == "linear:ABCUSDT:trading"
+
+    async def test_retry_outbox_row_not_duplicated_after_restart(self, tmp_path, db):
+        tr, notify, outbox = self.outbox_tracker(tmp_path, db)
+        created = await tr.handle_registry(
+            result(registry_event("ABCUSDT", "new", new_status="Trading")),
+            now=100,
+        )
+        key = created[0]["event_key"]
+        row = (await outbox.list_notifications())[0]
+        await outbox.mark_notification_retry(
+            row["id"], "TelegramSendError: out", next_attempt_at=9999999999
+        )
+        tr2, notify2, _ = self.outbox_tracker(tmp_path, db)
+        count = await tr2.reconcile_unsent()
+        assert count == 0
+        assert notify2.sent == []
+        rows = await outbox.list_notifications()
+        assert len(rows) == 1
+        assert rows[0]["status"] == "retry"

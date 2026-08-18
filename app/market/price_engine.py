@@ -103,12 +103,20 @@ class PriceEngine:
         self._latest[key] = ticker
         self.accepted += 1
 
-    def update_from_delta(self, category: str, symbol: str, data: dict) -> None:
+    def update_from_delta(
+        self,
+        category: str,
+        symbol: str,
+        data: dict,
+        ts_ms: Optional[int] = None,
+    ) -> None:
         """Merge a WebSocket delta into the existing snapshot.
 
         The existing ticker (if any) is copied and updated field-by-field
         with the delta; a partial delta never replaces the full snapshot.
         Numeric strings are normalized (they are strings on the wire).
+        ``ts_ms`` (message-level milliseconds) is preferred over a
+        ``data.ts`` fallback.
         """
         key = (category, symbol)
         existing = self._latest.get(key)
@@ -132,7 +140,7 @@ class PriceEngine:
             "price24hPcnt", existing.change_24h, _percent_from_fraction
         )
         timestamp = existing.timestamp
-        ts_raw = data.get("ts")
+        ts_raw = ts_ms if ts_ms is not None else data.get("ts")
         if ts_raw is not None:
             try:
                 timestamp = int(float(ts_raw)) // 1000

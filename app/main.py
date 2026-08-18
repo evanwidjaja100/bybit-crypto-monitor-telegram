@@ -130,6 +130,7 @@ class Application:
             ListingEventRepository(self.db),
             cfg,
             notify=self._notify_listing,
+            outbox=Repository(self.db),
         )
         await self.listing_tracker.reconcile_unsent()
 
@@ -151,6 +152,7 @@ class Application:
             SpotHistory(
                 PriceSampleRepository(self.db),
                 sample_seconds=cfg.spot_sample_seconds,
+                tolerance_seconds=cfg.spot_anchor_tolerance_seconds,
             ),
         )
         self.evaluator = MomentumEvaluator(
@@ -189,14 +191,12 @@ class Application:
             self.ticker_poll = TickerPollService(
                 self.rest, self.registry, self.price_engine, cfg
             )
-            self._tasks.append(
-                self._spawn(self.ticker_poll.run_forever(self.stop_event))
-            )
-        self._tasks.append(self._spawn(self._market_loop()))
-        self._tasks.append(self._spawn(self.discovery.run_forever(self.stop_event)))
-        self._tasks.append(self._spawn(self.health.run_forever(self.stop_event)))
+            self._spawn(self.ticker_poll.run_forever(self.stop_event))
+        self._spawn(self._market_loop())
+        self._spawn(self.discovery.run_forever(self.stop_event))
+        self._spawn(self.health.run_forever(self.stop_event))
         if cfg.listing_notifications_enabled:
-            self._tasks.append(self._spawn(self._announcement_loop()))
+            self._spawn(self._announcement_loop())
 
     async def _stop_services(self) -> None:
         if self.ws_manager is not None:
@@ -269,7 +269,11 @@ class Application:
 
     def _notify_listing(self, event: dict) -> object:
         return self.dispatcher.enqueue(
-            format_listing_alert(event, self.config), tag="listing"
+            format_listing_alert(event),
+            tag="listing",
+            dedupe_key=f"listing:{event['event_key']}",
+            origin_type="listing",
+            origin_key=event["event_key"],
         )
 
     async def _on_ws_reconnect(self, category: str) -> None:

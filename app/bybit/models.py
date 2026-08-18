@@ -52,13 +52,21 @@ class Ticker:
 
 @dataclass
 class Announcement:
-    """A Bybit announcement (used as a soft listing signal)."""
+    """A Bybit announcement (used as a soft listing signal).
+
+    The real API nests the announcement type as ``type: {key, title}``
+    plus a ``tags`` list; both are modelled explicitly.
+    """
 
     id: str
     title: str
     description: str
-    announcement_type: str | None = None
+    type_key: str | None = None
+    type_title: str | None = None
+    tags: tuple[str, ...] = ()
     timestamp: int = 0  # epoch seconds
+    # Compatibility alias for the previous flat ``announcement_type``.
+    announcement_type: str | None = None
     # Extra metadata captured for classifier heuristics.
     metadata: dict = field(default_factory=dict)
 

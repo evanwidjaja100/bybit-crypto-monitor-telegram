@@ -1,7 +1,8 @@
-httpx>=0.28.1
-websockets>=14.0
-aiosqlite>=0.20.0
-pydantic>=2.11.0
-pydantic-settings>=2.8.0
-pytest>=8.3.0
-pytest-asyncio>=0.25.0
+# Pinned versions tested for final acceptance (Python 3.14).
+aiosqlite==0.22.1
+httpx==0.28.1
+websockets==17.0.1
+pydantic==2.13.4
+pydantic-settings==2.15.0
+pytest==9.1.1
+pytest-asyncio==1.4.0

@@ -82,18 +82,32 @@ class TestSendMessage:
         assert len(attempts) == 2
         await http.aclose()
 
-    async def test_retries_on_429(self):
+    async def test_429_surfaces_immediately_with_retry_after(self):
         attempts = []
 
         def handler(request: httpx.Request) -> httpx.Response:
             attempts.append(1)
-            if len(attempts) <= 2:
-                return httpx.Response(429)
-            return httpx.Response(200, json={"ok": True})
+            return httpx.Response(
+                429, json={"ok": False, "parameters": {"retry_after": 45}}
+            )
 
         client, http = build_client(config(telegram_max_retries=5), handler)
-        await client.send_message("hello")
-        assert len(attempts) == 3
+        with pytest.raises(TelegramSendError) as excinfo:
+            await client.send_message("hello")
+        # Flood control is scheduled by the dispatcher (no internal
+        # hammering); the retry_after delay must be surfaced.
+        assert len(attempts) == 1
+        assert excinfo.value.retry_after == 45
+        await http.aclose()
+
+    async def test_429_retry_after_from_header(self):
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(429, headers={"Retry-After": "30"})
+
+        client, http = build_client(config(), handler)
+        with pytest.raises(TelegramSendError) as excinfo:
+            await client.send_message("hello")
+        assert excinfo.value.retry_after == 30
         await http.aclose()
 
     async def test_400_is_not_retried(self):

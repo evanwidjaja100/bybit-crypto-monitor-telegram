@@ -10,8 +10,9 @@ Event types: ``prelaunch``, ``trading``, ``announced``, ``delisted``.
 
 Idempotency: events are keyed ``(category, symbol, event_type)`` and
 inserted with ``INSERT OR IGNORE``; restarts never resend. The
-``telegram_sent`` flag tracks notification state and unsent events are
-retried on startup.
+``telegram_sent`` flag means CONFIRMED Telegram delivery: it is only set
+by the dispatcher after a successful send. On startup ``reconcile_unsent``
+re-pairs unsent events with the outbox instead of blindly re-notifying.
 """
 
 from __future__ import annotations
@@ -49,15 +50,30 @@ _LISTING_KEYWORDS = (
 )
 
 _SYMBOL_RE = re.compile(r"\b([A-Z0-9]{2,12}?(?:USDT|USDC))\b")
+# Base-ticker fallback: "New Listing: Example (XYZ) on Bybit" -> XYZ.
+_BASE_TICKER_RE = re.compile(r"\(([A-Z0-9]{2,10})\)")
 _PSEUDO_CATEGORY = "announcement"
 
 
+def _is_listing_announcement(announcement: Announcement) -> bool:
+    """Classify via structured fields first, title/description second."""
+    if announcement.type_key == "new_crypto":
+        return True
+    if any("listing" in tag.lower() for tag in announcement.tags):
+        return True
+    text = f"{announcement.title} {announcement.description}".lower()
+    return any(keyword in text for keyword in _LISTING_KEYWORDS)
+
+
 def _symbols_from_announcement(announcement: Announcement) -> set[str]:
-    text = f"{announcement.title} {announcement.description}"
-    lowered = text.lower()
-    if not any(keyword in lowered for keyword in _LISTING_KEYWORDS):
+    if not _is_listing_announcement(announcement):
         return set()
-    return set(_SYMBOL_RE.findall(text))
+    text = f"{announcement.title} {announcement.description}"
+    symbols = set(_SYMBOL_RE.findall(text))
+    if symbols:
+        return symbols
+    # Only the base ticker is available: never fabricate a market pair.
+    return set(_BASE_TICKER_RE.findall(text))
 
 
 def event_key_for(
@@ -66,19 +82,31 @@ def event_key_for(
     return f"{category or _PSEUDO_CATEGORY}:{symbol}:{event_type}"
 
 
+def listing_dedupe_key(event_key: str) -> str:
+    """Deterministic outbox dedupe key for a listing event."""
+    return f"listing:{event_key}"
+
+
 class ListingTracker:
-    """Persists listing events and notifies once per event."""
+    """Persists listing events and enqueues delivery once per event."""
 
     def __init__(
         self,
         repo: ListingEventRepository,
         config: Settings,
         notify: Optional[Any] = None,
+        outbox: Optional[Any] = None,
     ) -> None:
-        """``notify`` is an async callable ``(event: dict) -> None``."""
+        """``notify`` is an async callable ``(event: dict) -> None``.
+
+        ``outbox`` (optional ``Repository``) powers the R5 reconciliation:
+        unsent events are paired with their durable outbox rows instead of
+        being blindly re-notified on restart.
+        """
         self.repo = repo
         self.config = config
         self.notify = notify
+        self.outbox = outbox
 
     # ------------------------------------------------------------------
     # Signal A + B: registry events
@@ -155,14 +183,37 @@ class ListingTracker:
         return created
 
     # ------------------------------------------------------------------
-    # Startup retry: notify any event that was never delivered
+    # Startup retry: re-pair unsent events with the durable outbox
     # ------------------------------------------------------------------
     async def reconcile_unsent(self) -> int:
-        count = 0
+        """Repair notification state for events that were never confirmed.
+
+        With an outbox (production): a pending/retry row is left to the
+        dispatcher, a sent row repairs the stale ``telegram_sent`` flag,
+        and a missing row is re-created with the deterministic dedupe key.
+        Without an outbox (standalone tests): every unsent event is
+        notified again.
+        """
+        repaired = 0
         for event in await self.repo.unsent():
+            if self.outbox is not None:
+                row = await self.outbox.find_notification_by_dedupe(
+                    listing_dedupe_key(event["event_key"])
+                )
+                if row is not None:
+                    if row["status"] == "sent":
+                        # The outbox confirms delivery; repair the flag.
+                        await self.repo.mark_sent(event["event_key"])
+                        repaired += 1
+                        logger.info(
+                            "event=listing_flag_repaired key=%s",
+                            event["event_key"],
+                        )
+                    # pending/retry: the dispatcher owns delivery.
+                    continue
             await self._notify(event)
-            count += 1
-        return count
+            repaired += 1
+        return repaired
 
     # ------------------------------------------------------------------
     # Notification
@@ -172,8 +223,9 @@ class ListingTracker:
             return
         if self.notify is None or not self.config.listing_notifications_enabled:
             return
+        # Enqueue only: ``telegram_sent`` is set by the dispatcher after
+        # confirmed delivery, never here.
         await self.notify(event)
-        await self.repo.mark_sent(event["event_key"])
 
 
 __all__ = [
@@ -183,4 +235,5 @@ __all__ = [
     "EVENT_DELISTED",
     "ListingTracker",
     "event_key_for",
+    "listing_dedupe_key",
 ]

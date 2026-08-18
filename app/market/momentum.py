@@ -101,8 +101,6 @@ class SpotHistory:
 class MomentumEngine:
     """Computes 1-hour percentage change per market type."""
 
-    PRECISION_DECIMALS = 6
-
     def __init__(self, config: Settings, spot_history: SpotHistory) -> None:
         self.config = config
         self.threshold = config.alert_threshold_percent
@@ -135,17 +133,16 @@ class MomentumEngine:
     def qualifies(
         change_1h: Optional[float], threshold: float = 5.0
     ) -> bool:
-        """Strictly-greater-than comparison, deterministically rounded.
+        """Strictly-greater-than comparison, never rounded.
 
-        ``round(change, 6)`` removes float-representation error so that
-        exactly +5.000% (from exact integer inputs) does not qualify
-        while +5.001% does.
+        ``change_1h`` is already rounded to 9 decimals at computation time;
+        rounding it again before the threshold comparison would make
+        exactly 5.0000001 look like 5.000000 and silently miss qualifying
+        markets. The comparison must be strict ``>`` on the raw values.
         """
         if change_1h is None:
             return False
-        return round(change_1h, MomentumEngine.PRECISION_DECIMALS) > round(
-            threshold, MomentumEngine.PRECISION_DECIMALS
-        )
+        return float(change_1h) > float(threshold)
 
     # ------------------------------------------------------------------
     # Evaluation

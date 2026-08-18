@@ -86,8 +86,24 @@ class AlertStateMachine:
     async def update(
         self, qualifying: QualifyingSet, now: Optional[int] = None
     ) -> AlertDecision:
+        """Evaluate and persist in one committed step (test/legacy path)."""
+        decision, state = await self.evaluate(qualifying, now)
+        await self._save(state)
+        self._state = state
+        return decision
+
+    async def evaluate(
+        self, qualifying: QualifyingSet, now: Optional[int] = None
+    ) -> tuple[AlertDecision, dict[str, Any]]:
+        """Compute the next decision and state WITHOUT persisting.
+
+        Callers that persist the returned state themselves (and possibly
+        other rows in the same transaction) must use :meth:`persist_no_commit`.
+        State is always read fresh from the repository so a caller whose
+        transaction fails can simply not persist and retry later.
+        """
         now = int(now if now is not None else time.time())
-        state = await self._load()
+        state = await self.repo.load()
 
         prev_state = state["state"]
         new_state = classify_state(
@@ -105,6 +121,7 @@ class AlertStateMachine:
         if new_state == STATE_ACTIVE_RANGE:
             if prev_state != STATE_ACTIVE_RANGE and state.get("pending_since") is None:
                 state["pending_since"] = now
+                state["pending_from"] = prev_state
             pending = state.get("pending_since")
             if pending is None:
                 # Stable in the active range: only composition updates apply.
@@ -118,17 +135,22 @@ class AlertStateMachine:
                 if debounced:
                     if self.config.immediate_transition_alerts:
                         decision.live_transition = True
-                        decision.transition_reason = f"{prev_state} -> {new_state}"
+                        decision.transition_reason = (
+                            f"{state.get('pending_from') or prev_state} -> {new_state}"
+                        )
                         state["last_transition_at"] = now
-                        # The transition alert is this bucket's snapshot.
-                        state["last_hourly_bucket"] = hourly_bucket(now)
                     state["pending_since"] = None
+                    state["pending_from"] = None
+                    # The debounced transition owns this hourly bucket.
+                    state["last_hourly_bucket"] = hourly_bucket(now)
         else:
             # Leaving ACTIVE_RANGE cancels any pending transition.
             state["pending_since"] = None
+            state["pending_from"] = None
 
         if (
             new_state == STATE_ACTIVE_RANGE
+            and state.get("pending_since") is None
             and self.config.hourly_active_alerts
             and not decision.live_transition
         ):
@@ -140,8 +162,26 @@ class AlertStateMachine:
         state["state"] = new_state
         state["fingerprint"] = json.dumps(list(fingerprint))
         state["updated_at"] = now
-        await self._save(state)
-        return decision
+        return decision, state
+
+    def _state_fields(self, state: dict[str, Any]) -> dict[str, Any]:
+        return {
+            "state": state["state"],
+            "fingerprint": tuple(json.loads(state["fingerprint"])),
+            "updated_at": int(state["updated_at"]),
+            "last_transition_at": state.get("last_transition_at"),
+            "pending_since": state.get("pending_since"),
+            "pending_from": state.get("pending_from"),
+            "last_hourly_bucket": state.get("last_hourly_bucket"),
+            "last_composition_at": state.get("last_composition_at"),
+        }
+
+    async def persist_no_commit(self, state: dict[str, Any]) -> None:
+        """Persist the state returned by :meth:`evaluate` without committing."""
+        await self.repo.save_no_commit(**self._state_fields(state))
+
+    async def _save(self, state: dict[str, Any]) -> None:
+        await self.repo.save(**self._state_fields(state))
 
     def _maybe_composition_update(
         self, decision: AlertDecision, state: dict[str, Any], now: int
@@ -162,6 +202,7 @@ class AlertStateMachine:
             updated_at=int(state["updated_at"]),
             last_transition_at=state.get("last_transition_at"),
             pending_since=state.get("pending_since"),
+            pending_from=state.get("pending_from"),
             last_hourly_bucket=state.get("last_hourly_bucket"),
             last_composition_at=state.get("last_composition_at"),
         )
@@ -175,6 +216,7 @@ class AlertStateMachine:
                 "updated_at": int(time.time()),
                 "last_transition_at": None,
                 "pending_since": None,
+                "pending_from": None,
                 "last_hourly_bucket": None,
                 "last_composition_at": None,
             }
