@@ -53,8 +53,9 @@ trades, manages positions, or accesses private Bybit endpoints.
 Mandatory: Spot, Linear perpetuals, Linear futures, Linear USDT-settled,
 Linear USDC-settled, Linear `PreLaunch` (discovery).
 
-Inverse contracts are architecturally supported behind
-`ENABLE_INVERSE=false` (disabled by default).
+**Not supported in this release:** Inverse contracts and Options. No
+inverse monitoring paths exist (no `ENABLE_INVERSE` setting); a legacy
+`ENABLE_INVERSE` value in an old `.env` is ignored.
 
 ## 4. Momentum calculation
 
@@ -106,7 +107,7 @@ INSTRUMENT_REFRESH_SECONDS, ANNOUNCEMENT_REFRESH_SECONDS,
 REST_TICKER_POLL_SECONDS, SPOT_SAMPLE_SECONDS,
 IMMEDIATE_TRANSITION_ALERTS, HOURLY_ACTIVE_ALERTS,
 ALERT_DEBOUNCE_SECONDS, COMPOSITION_CHANGE_COOLDOWN_SECONDS,
-ENABLE_SPOT, ENABLE_LINEAR_USDT, ENABLE_LINEAR_USDC, ENABLE_INVERSE,
+ENABLE_SPOT, ENABLE_LINEAR_USDT, ENABLE_LINEAR_USDC,
 DATABASE_PATH, LOG_LEVEL
 ```
 

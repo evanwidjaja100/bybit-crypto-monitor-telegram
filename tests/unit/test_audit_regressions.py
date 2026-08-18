@@ -683,7 +683,6 @@ class TestP14DiscoveryTimestamp:
             enable_spot=True,
             enable_linear_usdt=False,
             enable_linear_usdc=False,
-            enable_inverse=False,
         )
         registry = InstrumentRegistry(InstrumentRepository(db))
         fake = FakeRest(

@@ -228,8 +228,7 @@ class MomentumEvaluator:
             if instrument.settle_coin == "USDC":
                 return self.config.enable_linear_usdc
             return False
-        if instrument.category == "inverse":
-            return self.config.enable_inverse
+        # Inverse is not supported in this release.
         return False
 
     async def evaluate_all(self, now: Optional[int] = None) -> list[MomentumValue]:

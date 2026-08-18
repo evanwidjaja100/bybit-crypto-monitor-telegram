@@ -59,7 +59,6 @@ def make_settings(tmpdir: str) -> Settings:
         enable_spot=True,
         enable_linear_usdt=True,
         enable_linear_usdc=False,
-        enable_inverse=False,
         enable_websocket=False,
         rest_fallback_enabled=False,
         listing_notifications_enabled=False,

@@ -167,7 +167,6 @@ class TestInstrumentDiscovery:
             enable_spot=True,
             enable_linear_usdt=True,
             enable_linear_usdc=True,
-            enable_inverse=False,
         )
         registry = InstrumentRegistry(InstrumentRepository(db))
         fake = FakeRest(
@@ -190,7 +189,6 @@ class TestInstrumentDiscovery:
             enable_spot=False,
             enable_linear_usdt=True,
             enable_linear_usdc=False,
-            enable_inverse=False,
         )
         registry = InstrumentRegistry(InstrumentRepository(db))
         fake = FakeRest(trading=[mk("linear", "BTCUSDT", "BTC", settle="USDT")])

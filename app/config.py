@@ -83,10 +83,13 @@ class Settings(BaseSettings):
     composition_change_cooldown_seconds: float = 300.0
 
     # --- Market universe ---
+    # Supported in this release: Spot, Linear USDT, Linear USDC.
+    # Inverse and Options are NOT supported. Legacy ENABLE_INVERSE in an
+    # old .env is ignored by the parser (extra="ignore") and never enables
+    # anything.
     enable_spot: bool = True
     enable_linear_usdt: bool = True
     enable_linear_usdc: bool = True
-    enable_inverse: bool = False
     enable_websocket: bool = True
     rest_fallback_enabled: bool = True
 

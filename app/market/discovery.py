@@ -156,19 +156,13 @@ class InstrumentDiscovery:
         fetched: list[Instrument] = []
         if self.config.enable_spot:
             fetched.extend(await self.rest.get_spot_instruments())
-        if (
-            self.config.enable_linear_usdt
-            or self.config.enable_linear_usdc
-            or self.config.enable_inverse
-        ):
+        if self.config.enable_linear_usdt or self.config.enable_linear_usdc:
             fetched.extend(
                 await self.rest.get_linear_instruments(status=STATUS_TRADING)
             )
             fetched.extend(
                 await self.rest.get_linear_instruments(status=STATUS_PRELAUNCH)
             )
-        if self.config.enable_inverse:
-            fetched.extend(await self.rest.get_inverse_instruments())
 
         result = await self.registry.reconcile(fetched, effective_now)
         self.last_result = result

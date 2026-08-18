@@ -198,11 +198,7 @@ class TickerPollService:
 
         if self.config.enable_spot:
             fetched.extend(await self.rest.get_spot_tickers())
-        if (
-            self.config.enable_linear_usdt
-            or self.config.enable_linear_usdc
-            or self.config.enable_inverse
-        ):
+        if self.config.enable_linear_usdt or self.config.enable_linear_usdc:
             fetched.extend(await self.rest.get_linear_tickers())
 
         updated = self.price_engine.update_tickers(fetched)

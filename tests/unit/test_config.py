@@ -26,7 +26,26 @@ class TestConfigBasics:
         assert s.enable_spot is True
         assert s.enable_linear_usdt is True
         assert s.enable_linear_usdc is True
-        assert s.enable_inverse is False
+
+    def test_production_universe_contains_only_supported_markets(self):
+        """Phase F3 8.3 - the enabled universe is exactly Spot + Linear
+        USDT + Linear USDC; no inverse setting exists anymore."""
+        s = make_settings()
+        assert s.enable_spot is True
+        assert s.enable_linear_usdt is True
+        assert s.enable_linear_usdc is True
+        assert not hasattr(s, "enable_inverse")
+
+    def test_legacy_enable_inverse_env_is_ignored(self, monkeypatch):
+        """An old .env with ENABLE_INVERSE must not break startup and must
+        not enable anything."""
+        monkeypatch.setenv("ENABLE_INVERSE", "true")
+        monkeypatch.setenv("ENABLE_INVERSE", "false")
+        s = make_settings()
+        assert not hasattr(s, "enable_inverse")
+        assert s.enable_spot is True
+        assert s.enable_linear_usdt is True
+        assert s.enable_linear_usdc is True
 
     def test_valid_environment_loads(self, monkeypatch):
         monkeypatch.setenv("BYBIT_BASE_URL", "https://api-testnet.bybit.com")

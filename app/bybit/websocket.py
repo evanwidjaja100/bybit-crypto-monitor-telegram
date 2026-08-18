@@ -310,8 +310,6 @@ class WebSocketManager:
                 elif inst.settle_coin == "USDC":
                     if self.config.enable_linear_usdc:
                         desired.add(inst.symbol)
-                elif self.config.enable_inverse:
-                    desired.add(inst.symbol)
             previous = client._subscribed
             client.set_symbols(desired)
             await client.resubscribe()

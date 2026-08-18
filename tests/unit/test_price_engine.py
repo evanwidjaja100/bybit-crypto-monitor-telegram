@@ -129,7 +129,6 @@ class TestTickerPollService:
             enable_spot=True,
             enable_linear_usdt=True,
             enable_linear_usdc=True,
-            enable_inverse=False,
         )
         registry = InstrumentRegistry(InstrumentRepository(db))
         # Seed registry: 1 spot, 1 linear USDT, 1 linear USDC.
