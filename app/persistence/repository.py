@@ -208,6 +208,64 @@ class InstrumentRepository:
         return int(row["c"])  # type: ignore[index]
 
 
+class AlertStateRepository:
+    """Persistent single-row store for the alert state machine."""
+
+    def __init__(self, db: Database) -> None:
+        self.db = db
+
+    async def load(self) -> dict[str, Any]:
+        row = await self.db.fetchone("SELECT * FROM alert_state WHERE id = 1")
+        if row is None:
+            return {
+                "state": "EMPTY",
+                "fingerprint": "[]",
+                "updated_at": 0,
+                "last_transition_at": None,
+                "pending_since": None,
+                "last_hourly_bucket": None,
+                "last_composition_at": None,
+            }
+        return dict(row)
+
+    async def save(
+        self,
+        state: str,
+        fingerprint: tuple[str, ...],
+        updated_at: int,
+        last_transition_at: Optional[int],
+        pending_since: Optional[int],
+        last_hourly_bucket: Optional[str],
+        last_composition_at: Optional[int],
+    ) -> None:
+        await self.db.execute(
+            """
+            INSERT INTO alert_state (
+                id, state, fingerprint, updated_at, last_transition_at,
+                pending_since, last_hourly_bucket, last_composition_at
+            ) VALUES (1, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(id) DO UPDATE SET
+                state = excluded.state,
+                fingerprint = excluded.fingerprint,
+                updated_at = excluded.updated_at,
+                last_transition_at = excluded.last_transition_at,
+                pending_since = excluded.pending_since,
+                last_hourly_bucket = excluded.last_hourly_bucket,
+                last_composition_at = excluded.last_composition_at
+            """,
+            (
+                state,
+                json.dumps(list(fingerprint), sort_keys=True),
+                updated_at,
+                last_transition_at,
+                pending_since,
+                last_hourly_bucket,
+                last_composition_at,
+            ),
+        )
+        await self.db.commit()
+
+
 class PriceSampleRepository:
     """Persistent spot price-history store for 1h momentum anchors."""
 
@@ -273,6 +331,7 @@ class PriceSampleRepository:
 __all__ = [
     "Repository",
     "InstrumentRepository",
+    "AlertStateRepository",
     "PriceSampleRepository",
     "row_to_instrument",
 ]
