@@ -190,6 +190,51 @@ class TestConcurrentServiceDispatcherAndSamples:
             await dispatcher.stop()
 
 
+class TestConcurrentListingAckAndAlertWrite:
+    """Phase F8 Test C - listing acknowledgement (dispatcher) and alert
+    writes (service) must serialize on the single connection."""
+
+    async def test_listing_ack_and_alert_writes_serialize(self, tmp_path, db):
+        from app.persistence.repository import ListingEventRepository
+
+        cfg = config(tmp_path, dispatcher_poll_seconds=0.02)
+        client = FakeClient()
+        dispatcher = AlertDispatcher(client, Repository(db), cfg)
+        await dispatcher.start()
+        service = AlertService(
+            AlertStateMachine(cfg, AlertStateRepository(db)), dispatcher, cfg
+        )
+        listings = ListingEventRepository(db)
+        try:
+            for i in range(10):
+                await listings.record(f"linear:L{i}:trading", "linear", f"L{i}USDT", "trading", 1_000 + i)
+
+            async def listing_writer():
+                for i in range(10):
+                    await listings.mark_sent(f"linear:L{i}:trading")
+
+            async def decider():
+                for coin_id in range(20):
+                    coins = qset(f"LC{coin_id}") if coin_id % 2 == 0 else qset()
+                    await service.process(coins, now=3000 + coin_id)
+
+            await asyncio.gather(listing_writer(), decider())
+            await asyncio.sleep(0.5)
+            rows = await Repository(db).list_notifications()
+            assert len(rows) == 10
+            assert all(r["status"] == "sent" for r in rows)
+            assert len(client.sent) == 10
+            # All listing acks persisted without corruption.
+            for i in range(10):
+                row = await db.fetchone(
+                    "SELECT telegram_sent FROM listing_events WHERE event_key = ?",
+                    (f"linear:L{i}:trading",),
+                )
+                assert row["telegram_sent"] == 1  # type: ignore[index]
+        finally:
+            await dispatcher.stop()
+
+
 class TestCriticalMarketStateSequence:
     """Section 16.2 - the full sequence with the real debounce window."""
 

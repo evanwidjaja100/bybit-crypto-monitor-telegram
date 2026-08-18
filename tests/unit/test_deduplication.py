@@ -61,6 +61,18 @@ class TestUniqueCoinCounts:
         assert result.base_coins == ("SOL",)
         assert result.count == 1
 
+    def test_plan_vector_xyz_three_markets_one_coin(self):
+        """Phase F8 required dedup vector: XYZ Spot +6%, USDT +9%,
+        USDC +8% -> unique count = 1."""
+        values = [
+            m("XYZ", 6.0, category="spot", settle_coin="USDT", quote_coin="USDT"),
+            m("XYZ", 9.0, settle_coin="USDT"),
+            m("XYZ", 8.0, settle_coin="USDC"),
+        ]
+        result = aggregate_qualifying(values)
+        assert result.count == 1
+        assert result.base_coins == ("XYZ",)
+
 
 class TestRepresentativeSelection:
     def test_highest_increase_wins(self):

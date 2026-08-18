@@ -274,6 +274,44 @@ class TestDispatcher:
         assert client.sent == []
         await dispatcher.stop()
 
+    async def test_listing_retry_survives_restart(self, tmp_path, db):
+        """Phase F8 - a listing notification mid-retry must be delivered
+        after a restart and its event acknowledged only then."""
+        repo = Repository(db)
+        from app.persistence.repository import ListingEventRepository
+
+        event = await ListingEventRepository(db).record(
+            "linear:NEW:trading", "linear", "NEWUSDT", "trading", 1_000
+        )
+        assert event is not None
+        nid = await repo.insert_outgoing_notification(
+            "listing",
+            "new listing",
+            status="retry",
+            created_at=int(time.time()),
+            origin_type="listing",
+            origin_key="linear:NEW:trading",
+        )
+        await repo.mark_notification_retry(
+            nid, "TelegramSendError: out", next_attempt_at=9999999999
+        )
+        # Time passes; the row is due again on the next start.
+        await db.execute("UPDATE outgoing_notifications SET next_attempt_at = 0")
+        await db.commit()
+
+        client = FakeClient()
+        dispatcher = AlertDispatcher(client, repo, config(tmp_path))
+        await dispatcher.start()
+        assert await wait_for(lambda: client.sent == ["new listing"])
+        await dispatcher.stop()
+        rows = await repo.list_notifications()
+        assert rows[0]["status"] == "sent"
+        listing = await db.fetchone(
+            "SELECT telegram_sent FROM listing_events WHERE event_key = ?",
+            ("linear:NEW:trading",),
+        )
+        assert listing["telegram_sent"] == 1  # type: ignore[index]
+
     async def test_permanent_error_marks_dead(self, tmp_path, db):
         client = FakeClient(fail=True, error=TelegramPermanentError("http_400"))
         dispatcher = AlertDispatcher(client, Repository(db), config(tmp_path))
