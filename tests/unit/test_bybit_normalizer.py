@@ -172,11 +172,23 @@ class TestAnnouncementParsing:
             "id": "12345",
             "title": "Bybit Lists XYZUSDT",
             "description": "details",
-            "type": "new_crypto_assets",
+            "type": {"key": "new_crypto", "title": "New Listings"},
+            "tags": ["Spot", "Spot Listings"],
             "dateTimestamp": "1700000000000",
         }
         announcement = parse_announcement(raw)
         assert announcement.id == "12345"
         assert announcement.title == "Bybit Lists XYZUSDT"
-        assert announcement.announcement_type == "new_crypto_assets"
+        assert announcement.type_key == "new_crypto"
+        assert announcement.type_title == "New Listings"
+        assert announcement.tags == ("Spot", "Spot Listings")
+        assert announcement.announcement_type == "new_crypto"
         assert announcement.timestamp == 1700000000
+
+    def test_announcement_flat_type_legacy_fallback(self):
+        announcement = parse_announcement(
+            {"id": "1", "title": "t", "description": "d", "type": "new_crypto_assets"}
+        )
+        assert announcement.type_key == "new_crypto_assets"
+        assert announcement.type_title is None
+        assert announcement.tags == ()

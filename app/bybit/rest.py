@@ -132,8 +132,13 @@ class BybitRestClient:
         except (TypeError, ValueError):
             raise BybitMalformedResponse("server time missing timeSecond") from None
 
-    async def get_spot_instruments(self, limit: int = 1000) -> list[Instrument]:
-        return await self._fetch_instruments("spot", status=None, limit=limit)
+    async def get_spot_instruments(self) -> list[Instrument]:
+        # Spot instruments-info returns the full list in one response and
+        # does not paginate; sending limit/cursor is invalid there.
+        payload = await self._request(_INSTRUMENTS_PATH, params={"category": "spot"})
+        result = payload.get("result") or {}
+        raw_list = result.get("list") or []
+        return [parse_instrument("spot", raw) for raw in raw_list]
 
     async def get_inverse_instruments(self, limit: int = 1000) -> list[Instrument]:
         return await self._fetch_instruments("inverse", status=None, limit=limit)

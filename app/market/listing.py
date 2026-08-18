@@ -50,15 +50,30 @@ _LISTING_KEYWORDS = (
 )
 
 _SYMBOL_RE = re.compile(r"\b([A-Z0-9]{2,12}?(?:USDT|USDC))\b")
+# Base-ticker fallback: "New Listing: Example (XYZ) on Bybit" -> XYZ.
+_BASE_TICKER_RE = re.compile(r"\(([A-Z0-9]{2,10})\)")
 _PSEUDO_CATEGORY = "announcement"
 
 
+def _is_listing_announcement(announcement: Announcement) -> bool:
+    """Classify via structured fields first, title/description second."""
+    if announcement.type_key == "new_crypto":
+        return True
+    if any("listing" in tag.lower() for tag in announcement.tags):
+        return True
+    text = f"{announcement.title} {announcement.description}".lower()
+    return any(keyword in text for keyword in _LISTING_KEYWORDS)
+
+
 def _symbols_from_announcement(announcement: Announcement) -> set[str]:
-    text = f"{announcement.title} {announcement.description}"
-    lowered = text.lower()
-    if not any(keyword in lowered for keyword in _LISTING_KEYWORDS):
+    if not _is_listing_announcement(announcement):
         return set()
-    return set(_SYMBOL_RE.findall(text))
+    text = f"{announcement.title} {announcement.description}"
+    symbols = set(_SYMBOL_RE.findall(text))
+    if symbols:
+        return symbols
+    # Only the base ticker is available: never fabricate a market pair.
+    return set(_BASE_TICKER_RE.findall(text))
 
 
 def event_key_for(

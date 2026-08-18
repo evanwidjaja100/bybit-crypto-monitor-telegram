@@ -787,11 +787,14 @@ class TestP16WebSocketTs:
         )
 
         async def handler(websocket):
+            # Snapshot on subscribe; the delta only follows a client ping so
+            # the snapshot state is observable before it is overwritten.
             try:
                 async for message in websocket:
                     data = json.loads(message)
                     if data.get("op") == "subscribe":
                         await websocket.send(snapshot)
+                    elif data.get("op") == "ping":
                         await websocket.send(delta)
             except Exception:
                 pass
@@ -801,6 +804,7 @@ class TestP16WebSocketTs:
             cfg = make_cfg(
                 tmp_path,
                 bybit_ws_base_url=f"ws://127.0.0.1:{port}/v5/public",
+                ws_heartbeat_interval_seconds=0.2,
             )
             repo = InstrumentRepository(db)
             await repo.upsert_many(

@@ -201,6 +201,7 @@ class BybitWebSocketClient:
                     "category": self.category,
                     "symbol": symbol,
                     "type": data.get("type"),
+                    "ts": data.get("ts"),
                     "data": data.get("data") or {},
                 }
             )
@@ -225,12 +226,13 @@ class WebSocketManager:
 
         def message_handler(category: str):
             def handle(payload: dict[str, Any]) -> None:
+                ts_ms = payload.get("ts")
                 if payload.get("type") == "snapshot":
-                    ticker = parse_ticker(category, payload["data"])
+                    ticker = parse_ticker(category, payload["data"], ts_ms=ts_ms)
                     self.price_engine.apply_snapshot(ticker)
                 else:
                     self.price_engine.update_from_delta(
-                        category, payload["symbol"], payload["data"]
+                        category, payload["symbol"], payload["data"], ts_ms=ts_ms
                     )
 
             return handle
