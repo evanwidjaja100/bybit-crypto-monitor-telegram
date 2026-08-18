@@ -52,7 +52,7 @@ LISTING_NOTIFICATIONS_ENABLED=false
 
 ```bash
 docker compose up -d --build
-docker compose logs -f monitor
+docker compose logs -f bybit-monitor
 ```
 
 - Persists state in the named volume `bybit_monitor_data` at `/data`.
@@ -104,10 +104,9 @@ app/
 `-- health/            health snapshot + observability
 
 tests/
-|-- unit/              unit tests
+|-- unit/              unit tests (incl. audit regression contracts)
 |-- integration/       mocked-Bybit integration tests
-|-- fixtures/          shared test fixtures
-`-- test_alert_scenarios.py  end-to-end alert scenarios
+`-- conftest.py        shared fixtures and test configuration
 
 data/                  local SQLite store (gitignored)
 ```
@@ -119,8 +118,11 @@ data/                  local SQLite store (gitignored)
 1. REST is the source of truth for discovery and reconciliation.
 2. WebSocket is the final primary source of live prices.
 3. Alert decisions are based *only* on unique `baseCoin` counts.
-4. Telegram delivery is decoupled via an async queue; a Telegram outage
-   never stops market ingestion.
+4. Telegram delivery is decoupled via a durable SQLite outbox: a
+   notification is persisted atomically with the alert state, then a
+   background dispatcher delivers it with bounded exponential retry
+   (respecting Telegram's 429 `retry_after`), so an outage never stops
+   market ingestion and no notification is lost on restart.
 5. All important state (registry, spot history, alert state, listing
    events, notification records) is persisted in SQLite.
 
@@ -129,14 +131,13 @@ data/                  local SQLite store (gitignored)
 ## Development
 
 - Python 3.12+ (developed and tested on 3.14).
-- `pytest` runs unit, integration, and scenario/chaos tests.
+- `pytest` runs unit, integration, and regression contract tests.
 - Integration tests mock the Bybit HTTP API with `httpx` `MockTransport`
   and the WebSocket with `websockets`' `serve()`.
 - Run a specific suite:
   ```bash
   pytest tests/unit -v
   pytest tests/integration -v
-  pytest tests/test_alert_scenarios.py -v
   ```
 
 ---

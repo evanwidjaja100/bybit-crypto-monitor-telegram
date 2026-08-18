@@ -52,19 +52,22 @@ Baseline output: `artifacts/baseline-test-results.txt`.
 
 | Phase | Status | Commit |
 |---|---|---|
-| R0 — baseline freeze | COMPLETE | (this commit) |
-| R1 — regression tests | pending | |
-| R2 — listing wiring + debounce | pending | |
-| R3 — atomic state + outbox | pending | |
-| R4 — durable Telegram retry | pending | |
-| R5 — listing delivery ack | pending | |
-| R6 — Bybit API contract alignment | pending | |
-| R7 — health and clock semantics | pending | |
-| R8 — config + WS lifecycle | pending | |
-| R9 — docs + reproducible deps | pending | |
+| R0 — baseline freeze | COMPLETE | `a5c33c1` |
+| R1 — regression tests | COMPLETE | `156e62f` |
+| R2 — listing wiring + debounce | COMPLETE | `b82924b` |
+| R3 — atomic state + outbox | COMPLETE | `b2b8025` |
+| R4 — durable Telegram retry | COMPLETE | `409b7b0` |
+| R5 — listing delivery ack | COMPLETE | `be58dca` |
+| R6 — Bybit API contract alignment | COMPLETE | `b798c20` |
+| R7 — health and clock semantics | COMPLETE | `9d75412` |
+| R8 — config + WS lifecycle | COMPLETE | `3e5a0b2` |
+| R9 — docs + reproducible deps | COMPLETE | (next commit) |
 | R10 — recovery and chaos acceptance | pending | |
 | R11 — live staging validation | pending | |
 | R12 — 24-hour soak | pending | |
 | R13 — final acceptance | pending | |
+
+Current test count (after R9): 280 passed / 0 failed, plus
+`scripts/soak_test.py` (26h simulated in ~30s, deterministic).
 
 Project status: **NOT PRODUCTION READY** until Phase R12 succeeds.
