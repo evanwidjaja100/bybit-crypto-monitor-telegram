@@ -1,0 +1,13 @@
+services:
+  bybit-monitor:
+    build: .
+    env_file: .env
+    environment:
+      DATABASE_PATH: /data/bybit_monitor.sqlite
+    volumes:
+      - bybit-data:/data
+    restart: unless-stopped
+    stop_grace_period: 30s
+
+volumes:
+  bybit-data:

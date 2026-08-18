@@ -15,6 +15,18 @@ from tests.conftest import make_settings
 
 
 def build_app(config: Settings) -> Application:
+    # Offline wiring: no external WebSocket / REST / Telegram calls in tests.
+    config = make_settings(
+        _env_file=None,
+        database_path=config.database_path,
+        telegram_bot_token=config.telegram_bot_token,
+        telegram_chat_id=config.telegram_chat_id,
+        immediate_transition_alerts=config.immediate_transition_alerts,
+        hourly_active_alerts=config.hourly_active_alerts,
+        listing_notifications_enabled=config.listing_notifications_enabled,
+        enable_websocket=False,
+        rest_fallback_enabled=False,
+    )
     return Application(config)
 
 
