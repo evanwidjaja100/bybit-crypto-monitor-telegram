@@ -1,95 +1,119 @@
 # Bybit Live Momentum Monitor → Telegram
-## Master Implementation Plan for AI Coding Agent
+## Independent Audit Remediation Master Implementation Plan
 
-**Document purpose:** This file is the authoritative implementation blueprint for building, testing, validating, and deploying the Bybit crypto momentum monitoring bot.
+**Document purpose:** This is the authoritative repair plan for the current Bybit monitoring repository after independent review of the repository ZIP and the AI-agent implementation sessions.
 
-**Execution rule:** Do not skip phases. Do not mark a phase complete until its exit gate passes.
+**Project state at the start of this plan:** `RELEASE CANDIDATE — NOT PRODUCTION READY`
 
----
-
-# 1. Product Objective
-
-Build a resilient 24/7 monitoring bot that:
-
-- Monitors all active Bybit Spot markets.
-- Monitors all active Bybit Linear derivatives settled in:
-  - USDT
-  - USDC
-- Detects newly listed instruments automatically.
-- Detects Linear `PreLaunch` instruments.
-- Calculates 1-hour price momentum.
-- Identifies coins whose price increase is strictly greater than 5% over 1 hour.
-- Groups markets by unique `baseCoin`.
-- Sends Telegram alerts only when the total number of unique qualifying coins is between 1 and 3 inclusive.
-- Suppresses the group alert when 4 or more unique coins qualify.
-- Sends hourly active-state alerts when the 1–3 coin condition remains active.
-- Survives restarts, API failures, WebSocket disconnects, and Telegram failures without losing important state.
-
-This is a monitoring and notification system only.
-
-It must **not** place trades, manage positions, or access private Bybit account endpoints.
+**Primary objective:** Repair the confirmed production defects without changing the locked product behavior, prove the fixes with regression and recovery tests, then complete a clean 24-hour soak before the project may be marked `DONE`.
 
 ---
 
-# 2. Locked Business Rules
+# 1. Critical Execution Rule
 
-These rules are authoritative.
+This is a **remediation plan**, not a feature-expansion plan.
 
-If implementation details conflict with these rules, the business rules win.
+Do **not**:
 
-## 2.1 Supported market universe
+- Rewrite the repository from scratch.
+- Change the core business rule.
+- Add trading functionality.
+- Add options monitoring.
+- Add unrelated dashboards, databases, message brokers, or infrastructure.
+- Refactor large areas merely for style.
+- Mark a defect fixed without first creating a test that reproduces it.
+- Mark Phase 12 or Phase 13 complete before the required elapsed 24-hour soak has actually completed.
+
+The repair sequence must be:
+
+```text
+REPRODUCE DEFECT WITH A FAILING TEST
+        ↓
+IMPLEMENT MINIMUM CORRECT FIX
+        ↓
+RUN TARGETED TEST
+        ↓
+RUN RELATED TEST MODULES
+        ↓
+RUN FULL TEST SUITE
+        ↓
+INSPECT ACTUAL BEHAVIOR
+        ↓
+COMMIT
+        ↓
+ONLY THEN MOVE TO NEXT PHASE
+```
+
+If the new regression test unexpectedly passes before the fix:
+
+```text
+STOP
+↓
+verify the test is exercising the real production path
+↓
+do not weaken the assertion
+↓
+find why the defect is not reproduced
+```
+
+---
+
+# 2. Locked Product Behavior
+
+The following requirements remain unchanged.
+
+## 2.1 Market universe
 
 Mandatory:
 
-- Bybit Spot
-- Bybit Linear USDT-settled derivatives
-- Bybit Linear USDC-settled derivatives
-- Linear perpetuals
-- Linear futures
-- Linear `PreLaunch` instruments for discovery
+- Bybit Spot.
+- Bybit Linear USDT-settled derivatives.
+- Bybit Linear USDC-settled derivatives.
+- Linear perpetuals.
+- Linear futures.
+- Linear `PreLaunch` discovery.
+- Automatic discovery of new instruments.
+- Automatic monitoring of newly tradable instruments.
 
-Not part of the initial production release:
+Default-disabled:
 
-- Options
-- Automated trading
-- Account balances
-- Open positions
-- Order placement
+- Inverse contracts.
 
-Inverse contracts should be architecturally possible through a feature flag but disabled by default.
+Out of scope:
+
+- Options.
+- Trading.
+- Orders.
+- Positions.
+- Balances.
+- Private Bybit endpoints.
 
 ---
 
-## 2.2 Definition of a qualifying coin
+## 2.2 Momentum threshold
 
-A market qualifies when:
+The qualifying rule remains exactly:
 
 ```python
 change_1h > 5.0
 ```
 
-This is a **strictly greater than** comparison.
-
 Examples:
 
 ```text
-+4.999%  -> does not qualify
-+5.000%  -> does not qualify
-+5.001%  -> qualifies
-+8.500%  -> qualifies
++4.999999%  -> does not qualify
++5.000000%  -> does not qualify
++5.000001%  -> qualifies
++9.000000%  -> qualifies
 ```
 
-Do not implement:
-
-```python
-change_1h >= 5.0
-```
+The implementation must not approximate the business rule by rounding the percentage before comparison.
 
 ---
 
-## 2.3 Definition of a unique coin
+## 2.3 Unique-coin rule
 
-Alerts operate on unique `baseCoin`, not raw symbols.
+Alert decisions operate on unique `baseCoin`, not raw market symbols.
 
 Example:
 
@@ -99,1955 +123,2553 @@ BTCUSDT Linear
 BTCUSDC Linear
 ```
 
-All represent:
+all count as:
 
 ```text
-BTC
+BTC = 1 unique coin
 ```
-
-Therefore they count as **one qualifying coin**.
 
 ---
 
-## 2.4 Telegram group-alert range
+## 2.4 Alert range
 
-Let:
-
-```text
-N = number of unique qualifying base coins
+```python
+alert_active = 1 <= unique_qualifying_base_coins <= 3
 ```
 
 Behavior:
 
-| Qualifying unique coins | Group alert |
+| Unique qualifying coins | Alert state |
 |---:|---|
-| 0 | OFF |
-| 1 | ON |
-| 2 | ON |
-| 3 | ON |
-| 4+ | OFF / SUPPRESSED |
-
-Exact expression:
-
-```python
-alert_active = 1 <= qualifying_coin_count <= 3
-```
+| 0 | EMPTY / no alert |
+| 1 | ACTIVE_RANGE |
+| 2 | ACTIVE_RANGE |
+| 3 | ACTIVE_RANGE |
+| 4+ | OVER_RANGE / suppress |
 
 ---
 
-## 2.5 Alert cadence
+## 2.5 Live transition debounce
 
-The system should support two alert layers.
-
-### Live transition alert
-
-Send when the market state transitions into the active range:
+Entering the active range from either:
 
 ```text
-0 -> 1-3
+EMPTY -> ACTIVE_RANGE
 ```
 
 or:
 
 ```text
-4+ -> 1-3
-```
-
-Use a short debounce period before sending.
-
-Recommended default:
-
-```text
-20 seconds
-```
-
-### Hourly active-state alert
-
-Once per hour:
-
-```text
-if qualifying count is 1-3
-    send active-state Telegram snapshot
-else
-    send nothing
-```
-
-Do not generate more than one hourly active-state message for the same hourly bucket.
-
----
-
-## 2.6 New-listing behavior
-
-The bot should detect new markets through:
-
-1. Bybit instrument discovery.
-2. Linear `PreLaunch` status.
-3. Bybit listing announcements where relevant.
-
-A new market must enter monitoring automatically.
-
-No application restart should be necessary.
-
----
-
-# 3. Engineering Principles
-
-The implementation must follow these rules:
-
-1. Separate ingestion from business logic.
-2. Separate alert decisions from Telegram delivery.
-3. Persist important state.
-4. Treat REST and WebSocket as independent components.
-5. Use REST as the source of truth for discovery and reconciliation.
-6. Use WebSocket as the final primary source of live prices.
-7. Prove correctness with REST polling before adding WebSocket complexity.
-8. Never use raw contract count for alert decisions.
-9. Never hard-code the list of coins.
-10. Never store production secrets in source control.
-11. Never mark a phase complete without tests.
-12. Never implement multiple major phases at once without validating the previous phase.
-
----
-
-# 4. Recommended Technology Stack
-
-Recommended:
-
-```text
-Python 3.12+
-asyncio
-httpx
-websockets
-aiosqlite
-pydantic-settings
-pytest
-pytest-asyncio
-Docker
-Docker Compose
-SQLite
-```
-
-Optional later:
-
-```text
-PostgreSQL
-Prometheus
-Grafana
-Redis
-```
-
-Do not introduce optional infrastructure until the SQLite version is stable.
-
----
-
-# 5. Recommended Repository Structure
-
-```text
-bybit-monitor/
-|
-|-- app/
-|   |-- __init__.py
-|   |-- main.py
-|   |-- config.py
-|   |
-|   |-- bybit/
-|   |   |-- __init__.py
-|   |   |-- rest.py
-|   |   |-- websocket.py
-|   |   |-- models.py
-|   |   `-- normalizer.py
-|   |
-|   |-- market/
-|   |   |-- __init__.py
-|   |   |-- discovery.py
-|   |   |-- price_engine.py
-|   |   |-- momentum.py
-|   |   `-- deduplication.py
-|   |
-|   |-- alerts/
-|   |   |-- __init__.py
-|   |   |-- state_machine.py
-|   |   |-- formatter.py
-|   |   `-- dispatcher.py
-|   |
-|   |-- telegram/
-|   |   |-- __init__.py
-|   |   `-- client.py
-|   |
-|   |-- persistence/
-|   |   |-- __init__.py
-|   |   |-- database.py
-|   |   |-- repository.py
-|   |   `-- migrations.py
-|   |
-|   `-- health/
-|       |-- __init__.py
-|       `-- monitor.py
-|
-|-- tests/
-|   |-- unit/
-|   |-- integration/
-|   |-- fixtures/
-|   `-- test_alert_scenarios.py
-|
-|-- data/
-|   `-- .gitkeep
-|
-|-- Dockerfile
-|-- docker-compose.yml
-|-- .env.example
-|-- .gitignore
-|-- requirements.txt
-|-- README.md
-`-- SPEC.md
-```
-
----
-
-# 6. Configuration Specification
-
-All important runtime behavior must be configuration-driven.
-
-Recommended environment variables:
-
-```text
-BYBIT_BASE_URL=https://api.bybit.com
-
-TELEGRAM_BOT_TOKEN=
-TELEGRAM_CHAT_ID=
-
-ALERT_THRESHOLD_PERCENT=5.0
-
-MIN_QUALIFYING_COINS=1
-MAX_QUALIFYING_COINS=3
-
-INSTRUMENT_REFRESH_SECONDS=300
-ANNOUNCEMENT_REFRESH_SECONDS=300
-
-REST_TICKER_POLL_SECONDS=10
-SPOT_SAMPLE_SECONDS=60
-
-IMMEDIATE_TRANSITION_ALERTS=true
-HOURLY_ACTIVE_ALERTS=true
-
-ALERT_DEBOUNCE_SECONDS=20
-COMPOSITION_CHANGE_COOLDOWN_SECONDS=300
-
-ENABLE_SPOT=true
-ENABLE_LINEAR_USDT=true
-ENABLE_LINEAR_USDC=true
-ENABLE_INVERSE=false
-
-DATABASE_PATH=/data/bybit_monitor.sqlite
-
-LOG_LEVEL=INFO
-```
-
-Production secrets must never have hard-coded defaults.
-
----
-
-# 7. Phase 1 — Repository and Application Foundation
-
-## Goal
-
-Create a clean, testable, asynchronous application skeleton.
-
-## Required work
-
-Implement:
-
-- Project structure.
-- Dependency management.
-- Configuration loading.
-- Logging initialization.
-- Application startup.
-- Graceful shutdown.
-- Empty SQLite database initialization.
-- Test framework.
-
-## Required startup behavior
-
-The application should:
-
-```text
-load config
--> initialize logging
--> initialize database
--> start application services
--> stay alive
-```
-
-## Required shutdown behavior
-
-On:
-
-```text
-SIGINT
-SIGTERM
-```
-
-perform:
-
-```text
-stop background loops
--> flush pending work
--> close HTTP sessions
--> close WebSockets
--> commit database state
--> close database
--> exit
-```
-
-## Implementation loop
-
-```text
-create skeleton
--> load configuration
--> start application
--> stop application
--> run tests
--> fix failures
--> repeat
-```
-
-## Required tests
-
-- Valid environment loads successfully.
-- Missing Telegram token fails clearly where appropriate.
-- Invalid numeric configuration is rejected.
-- Database initializes.
-- SIGTERM exits cleanly.
-- No secrets are logged.
-
-## Exit gate
-
-Do not proceed until:
-
-- `pytest` passes.
-- Application starts.
-- Application shuts down cleanly.
-- `.env` is ignored.
-- No credentials exist in repository.
-
----
-
-# 8. Phase 2 — Bybit REST Client
-
-## Goal
-
-Build a reliable REST interface before implementing market logic.
-
-## Required methods
-
-Implement methods equivalent to:
-
-```python
-get_spot_instruments()
-get_linear_instruments(status="Trading")
-get_linear_instruments(status="PreLaunch")
-get_spot_tickers()
-get_linear_tickers()
-get_announcements()
-get_server_time()
-```
-
-## REST requirements
-
-Every request must handle:
-
-- HTTP timeout.
-- Connection errors.
-- HTTP status errors.
-- Bybit non-zero `retCode`.
-- Invalid JSON.
-- Missing fields.
-- Schema changes.
-- Retryable failures.
-- Non-retryable failures.
-
-## Retry strategy
-
-Use:
-
-```text
-bounded retries
-+
-exponential backoff
-+
-jitter
-```
-
-Do not retry indefinitely.
-
-## Linear pagination
-
-Linear instrument discovery must paginate until no cursor remains.
-
-Pseudo-loop:
-
-```python
-cursor = None
-results = []
-
-while True:
-    page = fetch_linear_page(cursor=cursor)
-    results.extend(page.items)
-
-    if not page.next_cursor:
-        break
-
-    cursor = page.next_cursor
-```
-
-Never assume a single page contains all Linear contracts.
-
-## Implementation loop
-
-```text
-request
--> validate HTTP response
--> validate Bybit response
--> parse
--> normalize
--> test pagination
--> simulate failure
--> verify retry behavior
--> repeat
-```
-
-## Required tests
-
-- Spot instrument parsing.
-- Linear instrument parsing.
-- USDT settlement detection.
-- USDC settlement detection.
-- `Trading` detection.
-- `PreLaunch` detection.
-- Multiple-page Linear pagination.
-- Empty cursor termination.
-- Timeout retry.
-- Non-zero `retCode`.
-- Malformed response handling.
-
-## Exit gate
-
-REST client tests must all pass before market logic is introduced.
-
----
-
-# 9. Phase 3 — Instrument Registry
-
-## Goal
-
-Maintain a persistent authoritative registry of discovered markets.
-
-## Internal instrument model
-
-Use a structure equivalent to:
-
-```python
-Instrument(
-    category="linear",
-    symbol="BTCUSDT",
-    base_coin="BTC",
-    quote_coin="USDT",
-    settle_coin="USDT",
-    contract_type="LinearPerpetual",
-    status="Trading",
-    launch_time=None,
-    delivery_time=None,
-    is_pre_listing=False,
-)
-```
-
-## Instrument identity
-
-Use:
-
-```python
-(category, symbol)
-```
-
-Do not identify instruments by symbol alone.
-
-## Database table
-
-Recommended:
-
-```sql
-CREATE TABLE instruments (
-    category TEXT NOT NULL,
-    symbol TEXT NOT NULL,
-    base_coin TEXT NOT NULL,
-    quote_coin TEXT,
-    settle_coin TEXT,
-    contract_type TEXT,
-    status TEXT NOT NULL,
-    launch_time INTEGER,
-    delivery_time INTEGER,
-    is_pre_listing INTEGER NOT NULL DEFAULT 0,
-    first_seen_at INTEGER NOT NULL,
-    last_seen_at INTEGER NOT NULL,
-    PRIMARY KEY (category, symbol)
-);
-```
-
-## Discovery loop
-
-Every configured interval:
-
-```text
-fetch Spot
-+
-fetch Linear Trading
-+
-fetch Linear PreLaunch
--> normalize
--> compare with registry
--> insert new
--> update existing
--> detect status transitions
--> persist
--> publish internal discovery events
-```
-
-## First-start rule
-
-On an empty database:
-
-```text
-seed existing instruments silently
-```
-
-Do not send hundreds of "new listing" alerts.
-
-Only instruments first observed after initialization should be considered newly discovered.
-
-## Required tests
-
-- First startup seeds silently.
-- Restart does not rediscover all markets as new.
-- Newly appearing market generates discovery event.
-- `PreLaunch -> Trading` transition is detected.
-- Removed market is handled without corrupting registry.
-
-## Exit gate
-
-Repeated restarts must not create false new-listing events.
-
----
-
-# 10. Phase 4 — REST Price Engine MVP
-
-## Goal
-
-Prove complete market monitoring using REST polling before adding WebSockets.
-
-## Polling scope
-
-Poll:
-
-```text
-Spot tickers
-Linear tickers
-```
-
-Recommended initial interval:
-
-```text
-10 seconds
-```
-
-## Normalized ticker model
-
-Use a model equivalent to:
-
-```python
-Ticker(
-    category="linear",
-    symbol="BTCUSDT",
-    last_price=0.0,
-    mark_price=None,
-    index_price=None,
-    prev_price_1h=None,
-    change_24h=None,
-    turnover_24h=None,
-    volume_24h=None,
-    open_interest=None,
-    funding_rate=None,
-    timestamp=0,
-)
-```
-
-## Required normalization rules
-
-- Convert numeric strings safely.
-- Reject non-positive prices for momentum calculations.
-- Preserve `None` for unavailable fields.
-- Never silently convert invalid values to zero.
-
-## Implementation loop
-
-```text
-fetch
--> normalize
--> validate
--> update latest market state
--> count processed markets
--> log anomalies
--> repeat
-```
-
-## Required runtime metrics
-
-At minimum log periodic counts for:
-
-```text
-Spot instruments
-Linear USDT instruments
-Linear USDC instruments
-ticker rows received
-ticker rows accepted
-ticker rows rejected
-```
-
-## Exit gate
-
-Observed counts must agree with REST responses and no supported settlement currency may be silently omitted.
-
----
-
-# 11. Phase 5 — One-Hour Momentum Engine
-
-## Goal
-
-Calculate correct 1-hour percentage change for all supported markets.
-
----
-
-## 11.1 Linear derivatives
-
-For Linear derivatives:
-
-```python
-change_1h = ((last_price / prev_price_1h) - 1) * 100
-```
-
-Only calculate when:
-
-```python
-last_price > 0 and prev_price_1h > 0
-```
-
-Otherwise:
-
-```text
-change_1h = unavailable
-```
-
----
-
-## 11.2 Spot
-
-Spot requires locally maintained history.
-
-Persist approximately one sample per minute.
-
-Recommended table:
-
-```sql
-CREATE TABLE price_samples (
-    category TEXT NOT NULL,
-    symbol TEXT NOT NULL,
-    timestamp INTEGER NOT NULL,
-    price REAL NOT NULL,
-    PRIMARY KEY (category, symbol, timestamp)
-);
-```
-
-Recommended retention:
-
-```text
-90-120 minutes minimum
-```
-
-At time:
-
-```text
-T
-```
-
-target:
-
-```text
-T - 3600 seconds
-```
-
-Select the closest valid historical sample within a defined tolerance.
-
-Recommended tolerance:
-
-```text
-+/- 90 seconds
-```
-
-If a valid 1-hour anchor does not exist:
-
-```text
-status = WARMING_UP
-```
-
-Do not fabricate a result.
-
----
-
-## 11.3 Persistence
-
-Spot history must survive restart.
-
-The system should not require another full hour of runtime after every application restart if usable history is already persisted.
-
----
-
-## Required mathematical tests
-
-```text
-100 -> 105.000 = +5.000%  -> does NOT qualify
-100 -> 105.001 = +5.001%  -> qualifies
-100 -> 110     = +10.000%
-200 -> 210     = +5.000%   -> does NOT qualify
-10  -> 9       = -10.000%
-```
-
-## Floating-point rule
-
-Threshold logic should use the calculated numeric percentage directly.
-
-If necessary, use `Decimal` or another deterministic strategy in tests to avoid boundary ambiguity.
-
-## Implementation loop
-
-```text
-receive price
--> persist/downsample if needed
--> find 1h reference
--> calculate change
--> validate
--> compare expected result
--> repeat
-```
-
-## Exit gate
-
-All boundary tests must pass.
-
-Exactly +5.000% must never qualify.
-
----
-
-# 12. Phase 6 — Unique-Coin Aggregation
-
-## Goal
-
-Convert qualifying instruments into qualifying unique base coins.
-
-## Example
-
-Input:
-
-```text
-XYZUSDT Spot     +5.9%
-XYZUSDT Linear   +8.4%
-XYZUSDC Linear   +8.1%
-ABCUSDT Linear   +6.2%
-```
-
-Expected unique coins:
-
-```text
-XYZ
-ABC
-```
-
-Expected count:
-
-```text
-2
-```
-
-Not:
-
-```text
-4
-```
-
-## Representative-market selection
-
-Keep all qualifying markets internally.
-
-Select one representative market per base coin.
-
-Primary rule:
-
-```text
-highest valid 1h increase
-```
-
-Tie-break preference:
-
-```text
-USDT Linear
--> USDC Linear
--> stablecoin Spot
--> other Spot
-```
-
-## Example representative result
-
-```text
-XYZ
-representative: XYZUSDT Linear +8.4%
-other qualifying markets:
-- XYZUSDC Linear +8.1%
-- XYZ Spot +5.9%
-```
-
-## Implementation loop
-
-```text
-qualifying instruments
--> group by baseCoin
--> deduplicate
--> rank markets
--> select representative
--> calculate unique count
--> repeat
-```
-
-## Required tests
-
-```text
-BTCUSDT +6%, BTCUSDC +7% -> unique count 1
-BTC + ETH                -> unique count 2
-BTC + ETH + SOL          -> unique count 3
-BTC + ETH + SOL + DOGE   -> unique count 4
-```
-
-## Exit gate
-
-Alert decisions must consume only the unique-coin result.
-
-Raw contract count must never reach the alert policy.
-
----
-
-# 13. Phase 7 — Alert State Machine
-
-## Goal
-
-Implement the 1-to-3 qualifying coin rule exactly.
-
-## States
-
-```text
-EMPTY
-ACTIVE_RANGE
-OVER_RANGE
-```
-
-Definitions:
-
-```text
-EMPTY        = 0 qualifying coins
-ACTIVE_RANGE = 1-3 qualifying coins
-OVER_RANGE   = 4+ qualifying coins
-```
-
-## Basic transitions
-
-```text
-EMPTY -> ACTIVE_RANGE
-    send live transition alert
-
-ACTIVE_RANGE -> ACTIVE_RANGE
-    do not send immediate duplicate by default
-
-ACTIVE_RANGE -> OVER_RANGE
-    suppress range alerts
-
 OVER_RANGE -> ACTIVE_RANGE
-    send live transition alert
-
-ACTIVE_RANGE -> EMPTY
-    reset active state
-
-OVER_RANGE -> EMPTY
-    remain silent
 ```
 
----
+must remain continuously valid for the configured debounce interval before the live transition alert is emitted.
 
-## 13.1 Debounce
-
-Before sending a transition into `ACTIVE_RANGE`, require the state to remain valid for the configured debounce period.
-
-Recommended:
+Default:
 
 ```text
 20 seconds
 ```
 
-Example noisy behavior:
-
-```text
-5.01%
-4.99%
-5.02%
-4.98%
-```
-
-should not create repeated Telegram messages.
+No other alert type may bypass this initial debounce.
 
 ---
 
-## 13.2 Composition changes
+## 2.6 Hourly active snapshot
 
-Track a fingerprint:
+An hourly snapshot may be sent only when:
+
+```text
+state == ACTIVE_RANGE
+AND
+the active state is already confirmed/debounced
+AND
+that hourly bucket has not already been represented by another alert
+```
+
+The first entry into `ACTIVE_RANGE` must not generate an immediate "hourly" message before the debounce completes.
+
+---
+
+# 3. Confirmed Audit Findings to Repair
+
+Every item below must have a regression test and explicit completion evidence.
+
+## P0 — Release blocking
+
+### P0-1 — Listing formatter production wiring is broken
+
+Current production path passes configuration as the formatter timestamp:
 
 ```python
-tuple(sorted(unique_base_coins))
+format_listing_alert(event, self.config)
 ```
 
-Example:
+but the formatter expects:
 
-```text
-BTC + ETH
+```python
+format_listing_alert(event, now: Optional[int] = None)
 ```
 
-changes to:
-
-```text
-BTC + SOL
-```
-
-even though count stays at 2.
-
-Composition-change messages should be optional and cooldown-controlled.
-
-Recommended cooldown:
-
-```text
-5 minutes
-```
-
-Do not allow composition churn to generate Telegram spam.
+A real listing notification can therefore raise `TypeError`.
 
 ---
 
-## 13.3 Hourly active-state logic
+### P0-2 — Hourly alert bypasses the transition debounce
 
-Once per hourly bucket:
+On initial entry into `ACTIVE_RANGE`, `hourly_update` can become true while `pending_since` is still active.
 
-```text
-calculate unique qualifying set
--> if count is 1-3
-   -> send hourly snapshot
--> otherwise
-   -> send nothing
-```
+Consequences:
 
-Persist the last hourly bucket that generated a message.
-
-Restarting the bot must not duplicate the same hourly message.
+- Immediate Telegram message before 20-second debounce.
+- Possible second live-transition message after debounce.
+- Short-lived threshold spikes can alert even though they did not survive debounce.
 
 ---
 
-## Required state-machine tests
+### P0-3 — Alert state and outgoing notification are not atomic
+
+Current sequence is effectively:
 
 ```text
-0 -> no alert
-1 -> alert
-2 -> alert
-3 -> alert
-4 -> no alert
-10 -> no alert
+persist alert state
+↓
+then enqueue/persist Telegram notification
 ```
 
-Transitions:
-
-```text
-0 -> 1  = alert
-1 -> 2  = no immediate duplicate unless configured composition update
-2 -> 3  = no immediate duplicate unless configured composition update
-3 -> 4  = suppress
-4 -> 3  = alert
-3 -> 0  = reset
-```
-
-## Exit gate
-
-This phase is mandatory green before Telegram integration.
+A crash between those operations can permanently lose the notification while the persisted alert state says the transition already happened.
 
 ---
 
-# 14. Phase 8 — Telegram Integration
+### P0-4 — Failed Telegram notifications are abandoned permanently
+
+Current durable outbox supports startup requeue for `pending`, but messages marked `failed` are not scheduled for retry after Telegram recovers.
+
+---
+
+### P0-5 — Listing events are marked sent when only queued
+
+A listing event is marked `telegram_sent = 1` immediately after the dispatcher accepts the message into the queue.
+
+That is not proof of Telegram delivery.
+
+If delivery then fails:
+
+```text
+listing event = sent
+outgoing notification = failed
+```
+
+and the listing alert can be lost permanently.
+
+---
+
+## P1 — API and runtime correctness
+
+### P1-1 — Announcement normalization does not match the real Bybit structure
+
+Repair support for structured announcement fields including:
+
+```text
+type.key
+type.title
+tags
+```
+
+Do not depend exclusively on a title containing a complete `...USDT` or `...USDC` symbol.
+
+Announcement signal is supplemental; instrument registry remains authoritative.
+
+---
+
+### P1-2 — Wrong prelisting field
+
+Current normalizer reads:
+
+```text
+preList
+```
+
+Repair to use:
+
+```text
+isPreListing
+```
+
+while still recognizing `status == "PreLaunch"`.
+
+---
+
+### P1-3 — Spot instruments request sends pagination arguments
+
+Spot discovery should not use Linear pagination semantics.
+
+Spot request:
+
+```text
+category=spot
+```
+
+must not include `limit` or `cursor`.
+
+Linear must continue to paginate correctly.
+
+---
+
+### P1-4 — Discovery health timestamp can remain `None`
+
+A normal production call to:
+
+```python
+discover_once()
+```
+
+must set a real wall-clock success timestamp.
+
+---
+
+### P1-5 — Health monitor mixes monotonic and epoch clocks
+
+WebSocket staleness/reconnect logic may use `time.monotonic()` internally.
+
+Health reporting must not subtract a monotonic timestamp from `time.time()`.
+
+Use separate fields or convert the health timestamp to wall-clock epoch.
+
+---
+
+### P1-6 — WebSocket top-level `ts` is discarded
+
+Bybit WebSocket message timestamps must be propagated into normalized ticker state.
+
+Do not expect the timestamp to live inside ticker `data`.
+
+---
+
+## P2 — Hardening and cleanup
+
+### P2-1 — Spot anchor tolerance configuration is not fully wired
+
+`spot_anchor_tolerance_seconds` must be passed into the actual Spot history/momentum implementation.
+
+---
+
+### P2-2 — WebSocket reconnect maximum attempts setting is unused
+
+Either:
+
+1. Implement it with safe behavior and clear semantics, or
+2. Remove it from configuration if indefinite reconnect is intentionally required.
+
+Do not leave dead configuration.
+
+For a 24/7 monitor, preferred behavior is indefinite service recovery with capped backoff rather than permanently giving up after 20 attempts. If so, rename/remove the misleading setting.
+
+---
+
+### P2-3 — Subscription synchronization needs stricter filtering
+
+WebSocket topics must reflect enabled market flags and supported settlement currencies.
+
+Also reconcile removed/delisted instruments instead of leaving stale desired subscriptions indefinitely.
+
+---
+
+### P2-4 — Duplicate task registration
+
+Review task creation in `main.py`.
+
+If `_spawn()` already stores the returned task, callers must not append the same task to the tracking list again.
+
+---
+
+### P2-5 — Documentation drift
+
+Repair README references that do not exist or use the wrong Compose service name.
+
+---
+
+### P2-6 — Dependency reproducibility
+
+Current loose `>=` dependency declarations are not enough for a production release.
+
+Create a reproducible tested dependency set.
+
+---
+
+# 4. Target Reliability Model
+
+The corrected alert pipeline must become:
+
+```text
+MARKET SNAPSHOT
+      ↓
+MOMENTUM ENGINE
+      ↓
+UNIQUE BASE-COIN SET
+      ↓
+PURE ALERT DECISION
+      ↓
+ATOMIC DATABASE COMMIT
+ ┌───────────────┬────────────────────┐
+ │ alert state   │ outgoing outbox row│
+ └───────────────┴────────────────────┘
+      ↓
+DURABLE DISPATCHER
+      ↓
+TELEGRAM
+      ↓
+SUCCESS ACK
+      ↓
+mark outbox sent
+      ↓
+if listing origin:
+mark listing delivered
+```
+
+Temporary failure:
+
+```text
+Telegram fails
+      ↓
+outbox status = retry
+attempt_count += 1
+next_attempt_at = future time
+      ↓
+monitoring continues
+      ↓
+dispatcher retries later
+      ↓
+success
+```
+
+Crash:
+
+```text
+database transaction committed
+      ↓
+process crashes before Telegram delivery
+      ↓
+restart
+      ↓
+outbox row still pending/retry
+      ↓
+dispatcher requeues
+```
+
+---
+
+# 5. Database Migration Strategy
+
+Do not destroy the existing SQLite database.
+
+Create a new migration version.
+
+Recommended additions to `outgoing_notifications`:
+
+```text
+dedupe_key TEXT
+attempt_count INTEGER NOT NULL DEFAULT 0
+next_attempt_at INTEGER
+last_attempt_at INTEGER
+origin_type TEXT
+origin_key TEXT
+```
+
+Existing fields may remain:
+
+```text
+id
+message_tag
+message
+created_at
+status
+sent_at
+error
+```
+
+Recommended statuses:
+
+```text
+pending
+retry
+sent
+dead
+```
+
+Do not use `failed` as a terminal state for normal transient Telegram failures.
+
+Create a unique index:
+
+```sql
+CREATE UNIQUE INDEX ... ON outgoing_notifications(dedupe_key)
+WHERE dedupe_key IS NOT NULL;
+```
+
+If SQLite version compatibility makes a partial unique index undesirable, use a normal unique index and ensure non-deduplicated records receive unique keys.
+
+---
+
+## 5.1 Dedupe-key examples
+
+Transition:
+
+```text
+transition:<state-version-or-event-id>:BTC,ETH
+```
+
+Hourly:
+
+```text
+hourly:<UTC-hour-bucket>:BTC,ETH
+```
+
+Composition:
+
+```text
+composition:<fingerprint>:<cooldown-bucket>
+```
+
+Listing:
+
+```text
+listing:<event_key>
+```
+
+The key must be deterministic for the logical notification.
+
+---
+
+## 5.2 Listing delivery linkage
+
+Recommended:
+
+```text
+origin_type = "listing"
+origin_key = listing_event.event_key
+```
+
+On successful Telegram delivery:
+
+```text
+outgoing_notifications.status = sent
+listing_events.telegram_sent = 1
+```
+
+Prefer doing those success updates in one transaction.
+
+---
+
+# 6. Phase R0 — Freeze and Baseline the Current Release Candidate
 
 ## Goal
 
-Deliver reliable, readable notifications without allowing Telegram failures to affect market ingestion.
+Establish a known starting point before repairs.
 
-## Required client behavior
+## Required actions
 
-Implement:
+1. Create a repair branch:
 
-```python
-TelegramClient.send_message()
+```text
+audit-remediation
+```
+
+2. Record the current commit hash.
+
+3. Run the existing complete test suite unchanged.
+
+4. Save the output:
+
+```text
+artifacts/baseline-test-results.txt
+```
+
+5. Record:
+
+```text
+Python version
+dependency versions
+OS
+current test count
+current git status
+```
+
+6. Confirm no real credentials are tracked.
+
+7. Do not modify existing tests before the baseline run.
+
+## Baseline report
+
+Create:
+
+```text
+AUDIT_REMEDIATION_STATUS.md
 ```
 
 with:
 
-- timeout
-- retry
-- bounded backoff
-- structured error handling
-- safe message splitting
-- no secret logging
+```text
+BASELINE COMMIT:
+BASELINE TEST COUNT:
+BASELINE PASS/FAIL:
+PYTHON:
+DATE:
+```
 
-## Alert-delivery architecture
+## Loop
 
-Do not send Telegram messages directly from the market calculation loop.
+```text
+checkout repair branch
+→ verify clean tree
+→ run baseline
+→ save output
+→ inspect failures
+→ if existing suite unexpectedly fails, investigate environment first
+→ repeat until baseline is understood
+```
+
+## Exit gate
+
+Do not proceed unless:
+
+- Baseline result is recorded.
+- Repository state is clean or all pre-existing differences are explained.
+- No repair has been mixed into the baseline commit.
+
+---
+
+# 7. Phase R1 — Add Regression Tests for Every Confirmed Defect
+
+## Goal
+
+Create failing tests that prove the audit findings before fixing them.
+
+These tests are the contract for the remediation.
+
+Do not weaken them to accommodate the current code.
+
+---
+
+## 7.1 Required regression tests
+
+Add tests with names equivalent to:
+
+```text
+test_real_application_listing_callback_formats_and_enqueues
+test_initial_active_entry_does_not_emit_hourly_before_debounce
+test_transient_active_range_shorter_than_debounce_emits_nothing
+test_debounce_completion_emits_exactly_one_transition
+test_alert_state_and_outbox_commit_atomically
+test_crash_after_atomic_commit_requeues_notification_on_restart
+test_failed_telegram_notification_is_retried_after_recovery
+test_listing_is_not_marked_sent_when_only_enqueued
+test_listing_is_marked_sent_after_successful_delivery
+test_real_bybit_announcement_schema_new_crypto
+test_is_pre_listing_uses_real_field
+test_spot_instruments_request_has_no_limit_or_cursor
+test_discovery_success_time_is_set_without_injected_now
+test_health_does_not_mix_monotonic_and_epoch_time
+test_websocket_top_level_ts_is_preserved
+test_spot_anchor_tolerance_config_is_wired
+test_threshold_does_not_round_before_strict_comparison
+```
+
+Add any additional tests needed for implementation safety.
+
+---
+
+## 7.2 Production-path testing rule
+
+For wiring bugs, do not test only helper classes.
+
+At least one test must exercise:
+
+```text
+Application construction/wiring
+→ actual callback
+→ actual formatter
+→ actual dispatcher boundary
+```
+
+This is necessary because the listing bug survived module-level tests.
+
+---
+
+## 7.3 Realistic Bybit fixtures
+
+Create sanitized fixtures based on actual response structure.
+
+Examples should include:
+
+### Instrument fixture
+
+```json
+{
+  "symbol": "XYZUSDT",
+  "status": "PreLaunch",
+  "baseCoin": "XYZ",
+  "quoteCoin": "USDT",
+  "settleCoin": "USDT",
+  "contractType": "LinearPerpetual",
+  "isPreListing": true
+}
+```
+
+### Announcement fixture
+
+Include nested structured fields:
+
+```json
+{
+  "id": "example-id",
+  "title": "New Listing: Example (XYZ) on Bybit",
+  "type": {
+    "title": "New Listings",
+    "key": "new_crypto"
+  },
+  "tags": ["Spot", "Spot Listings"],
+  "dateTimestamp": "..."
+}
+```
+
+The announcement test must not require `XYZUSDT` to appear literally in the title.
+
+### WebSocket ticker fixture
+
+Include:
+
+```json
+{
+  "topic": "tickers.XYZUSDT",
+  "type": "snapshot",
+  "ts": 1700000000123,
+  "data": {
+    "symbol": "XYZUSDT",
+    "lastPrice": "...",
+    "prevPrice1h": "..."
+  }
+}
+```
+
+---
+
+## Loop
+
+```text
+add one regression test
+→ run only that test
+→ confirm it FAILS for the expected reason
+→ document failure
+→ move to next regression test
+```
+
+## Exit gate
+
+Before implementation fixes:
+
+- Each confirmed bug has at least one reproducing test.
+- The new tests fail because of the real defect, not because the test itself is malformed.
+- Existing unrelated tests still pass.
+
+Commit:
+
+```text
+Phase R1: audit regression tests
+```
+
+---
+
+# 8. Phase R2 — Repair Listing Wiring and Debounce Semantics
+
+## Goal
+
+Fix the two immediate runtime defects without yet redesigning persistence.
+
+---
+
+## 8.1 Fix listing formatter production wiring
+
+Correct the actual `Application` callback.
+
+Expected behavior:
+
+```text
+listing event
+→ format_listing_alert(event)
+→ dispatcher.enqueue(...)
+```
+
+If a deterministic timestamp is required for tests, inject an integer timestamp explicitly.
+
+Never pass `Settings` as the formatter's `now` argument.
+
+---
+
+## 8.2 Fix initial debounce
+
+During:
+
+```text
+pending_since != None
+```
+
+all user-facing alert outputs must be false:
+
+```python
+decision.live_transition is False
+decision.hourly_update is False
+decision.composition_update is False
+```
+
+until the debounce completes.
+
+Recommended state rule:
+
+```text
+ACTIVE_RANGE + pending debounce
+    = provisional active state
+    = no notification
+```
+
+Only after the pending state becomes confirmed may hourly/composition policies apply.
+
+---
+
+## 8.3 Bucket ownership
+
+When the live transition fires:
+
+```text
+transition alert represents the current hourly snapshot
+```
+
+so:
+
+```text
+last_hourly_bucket = current bucket
+```
+
+must prevent an additional hourly notification in the same bucket.
+
+---
+
+## Required test scenarios
+
+### Scenario A
+
+```text
+t=0
+BTC +6%
+```
+
+Expected:
+
+```text
+no transition
+no hourly
+no composition
+```
+
+### Scenario B
+
+```text
+t=10
+BTC +4.9%
+```
+
+Expected:
+
+```text
+no message ever sent
+pending debounce cleared
+```
+
+### Scenario C
+
+```text
+t=0 BTC +6%
+t=20 BTC +6%
+```
+
+Expected:
+
+```text
+exactly one transition message
+no hourly message in same bucket
+```
+
+### Scenario D
+
+```text
+OVER_RANGE -> ACTIVE_RANGE
+```
+
+must follow the same debounce rule.
+
+---
+
+## Loop
+
+```text
+run failing wiring test
+→ fix wiring
+→ rerun
+
+run debounce tests
+→ modify state logic
+→ rerun targeted state-machine tests
+→ run alert-service tests
+→ run integration pipeline tests
+→ run full suite
+```
+
+## Exit gate
+
+- Real listing callback no longer raises.
+- Initial debounce cannot be bypassed by hourly/composition alerts.
+- Debounced entry sends exactly one message.
+- Existing 0/1/2/3/4+ behavior remains unchanged.
+
+Commit:
+
+```text
+Phase R2: listing wiring and debounce correctness
+```
+
+---
+
+# 9. Phase R3 — Make Alert Decision Persistence Atomic
+
+## Goal
+
+Eliminate the crash window between state transition persistence and outbox insertion.
+
+This is the most important architectural repair.
+
+---
+
+## 9.1 Separate decision calculation from commit
+
+Preferred design:
+
+```text
+AlertStateMachine.evaluate(...)
+```
+
+returns:
+
+```text
+next state
++
+decision
+```
+
+without committing.
+
+Then an orchestration layer performs one transaction:
+
+```text
+BEGIN
+    save next alert state
+    insert notification if required
+COMMIT
+```
+
+Alternative designs are acceptable only if they provide the same atomic guarantee.
+
+---
+
+## 9.2 Do not call commit inside transaction-aware repository methods
+
+Current repository methods commit independently.
+
+Introduce transaction-compatible methods, for example:
+
+```python
+save_no_commit(...)
+insert_outgoing_notification_no_commit(...)
+```
+
+or:
+
+```python
+save(..., commit=False)
+insert_outgoing_notification(..., commit=False)
+```
+
+or a dedicated atomic repository/coordinator.
+
+Preferred approach: keep public high-level repository APIs simple and add a dedicated method for the atomic business operation.
+
+Example conceptual API:
+
+```python
+await alert_repo.persist_decision_and_outbox(
+    next_state=...,
+    notification=...,
+)
+```
+
+---
+
+## 9.3 Notification must be created before the state transition is considered durable
+
+Atomic outcome must be either:
+
+```text
+A:
+state changed
+AND outbox row exists
+```
+
+or:
+
+```text
+B:
+neither change exists
+```
+
+Never:
+
+```text
+state changed
+BUT no outbox row
+```
+
+---
+
+## 9.4 Deterministic dedupe key
+
+Generate the logical notification key before insertion.
+
+The unique constraint protects against:
+
+```text
+retry after timeout
+process restart
+duplicate service invocation
+```
+
+---
+
+## Required fault-injection tests
+
+Simulate failure:
+
+```text
+after state SQL
+before outbox SQL
+```
+
+Expected:
+
+```text
+transaction rollback
+old state remains
+no outbox row
+```
+
+Simulate:
+
+```text
+after outbox SQL
+before commit
+```
+
+Expected:
+
+```text
+transaction rollback
+old state remains
+no outbox row
+```
+
+Successful commit:
+
+```text
+next state exists
+exactly one outbox row exists
+```
+
+Restart:
+
+```text
+pending outbox row remains recoverable
+```
+
+Duplicate processing:
+
+```text
+same dedupe key
+→ exactly one logical notification row
+```
+
+---
+
+## Loop
+
+```text
+design migration/API
+→ write transactional test
+→ implement transaction-safe repository behavior
+→ inject failure
+→ prove rollback
+→ prove successful atomic commit
+→ run all state/repository/dispatcher tests
+→ run full suite
+```
+
+## Exit gate
+
+No code path may persist a send-producing alert state without also durably creating its outgoing notification.
+
+Commit:
+
+```text
+Phase R3: atomic alert state and durable outbox
+```
+
+---
+
+# 10. Phase R4 — Durable Telegram Retry State Machine
+
+## Goal
+
+Ensure transient Telegram failures do not permanently abandon notifications.
+
+---
+
+## 10.1 Status semantics
 
 Use:
 
 ```text
-market event
--> alert decision
--> persistent/outgoing alert record
--> Telegram queue
--> Telegram dispatcher
+pending
+retry
+sent
+dead
 ```
 
-A Telegram outage must not stop Bybit monitoring.
+Definitions:
+
+### pending
+
+Ready for immediate first attempt.
+
+### retry
+
+Temporary failure occurred; schedule another attempt.
+
+### sent
+
+Telegram delivery confirmed.
+
+### dead
+
+Terminal failure after configured policy, used only when continued retry is clearly inappropriate.
+
+For this bot, normal network errors, 429s, and 5xx responses are retryable.
 
 ---
 
-## Recommended alert format
+## 10.2 Persist retry metadata
+
+Track:
+
+```text
+attempt_count
+last_attempt_at
+next_attempt_at
+error
+```
+
+---
+
+## 10.3 Retry scheduling
+
+Recommended default policy:
+
+```text
+attempt 1 → immediate
+attempt 2 → +10 sec
+attempt 3 → +30 sec
+attempt 4 → +60 sec
+attempt 5 → +5 min
+then capped exponential backoff
+```
+
+A 24/7 monitoring bot should generally retain retryable messages instead of discarding them after a few minutes.
+
+Set a reasonable maximum message age if required.
 
 Example:
 
 ```text
-🚨 BYBIT 1H MOMENTUM ALERT
+transition/hourly alerts:
+expire after configurable age if stale
 
-2 / 3 qualifying coins
-
-🔥 XYZ
-USDT Perpetual
-1H: +9.42%
-Price: $0.08421
-24H: +18.30%
-Mark: $0.08410
-Funding: +0.018%
-24H Turnover: $42.8M
-
-🔥 ABC
-USDC Perpetual
-1H: +6.17%
-Price: $1.284
-24H: +8.92%
-
-Rule:
-1-3 unique coins > +5% / 1H
-
-Updated: YYYY-MM-DD HH:MM UTC
+listing alerts:
+retain longer because listing notification remains relevant
 ```
 
-For one coin:
-
-```text
-1 / 3 qualifying coins
-```
-
-For three:
-
-```text
-3 / 3 qualifying coins
-```
-
-Never produce:
-
-```text
-4 / 3
-```
-
-because 4+ is suppressed.
+If expiration is implemented, test it explicitly.
 
 ---
 
-## Telegram test requirements
+## 10.4 Telegram 429 handling
 
-Test:
-
-- One qualifying coin.
-- Two qualifying coins.
-- Three qualifying coins.
-- Long message splitting.
-- Retry after transient failure.
-- Telegram failure while monitoring continues.
-- Message formatting on a real Telegram client.
-
-## Security rules
-
-`.env.example` may contain:
+If Telegram supplies a `retry_after` delay:
 
 ```text
-TELEGRAM_BOT_TOKEN=
-TELEGRAM_CHAT_ID=
+use retry_after as the minimum next-attempt delay
 ```
 
-No real credentials may appear in:
+Do not hammer Telegram with generic retries during flood control.
 
-- Git
-- README
-- Dockerfile
-- docker-compose.yml
-- logs
-- test fixtures
-- screenshots
+---
+
+## 10.5 Startup recovery
+
+On startup, load:
+
+```text
+pending
++
+retry where next_attempt_at <= now
+```
+
+Messages with a future retry time must be scheduled without busy-looping.
+
+---
+
+## 10.6 Idempotency
+
+Dispatcher should assume:
+
+```text
+delivery attempt may be repeated
+```
+
+and use the outbox status/dedupe key to prevent duplicate queue creation inside the application.
+
+Exact-once delivery cannot be guaranteed across an external network boundary, but the system must minimize duplicates and never intentionally discard transiently failed records.
+
+---
+
+## Required tests
+
+- Network timeout -> retry state.
+- Telegram 5xx -> retry state.
+- Telegram 429 with `retry_after`.
+- Restart while notification is `retry`.
+- Notification eventually succeeds.
+- Success sets `sent_at`.
+- Successful row is not sent again on restart.
+- Retry rows do not spin continuously.
+- Outbox dedupe key prevents duplicate creation.
+
+---
+
+## Loop
+
+```text
+fail Telegram stub
+→ inspect persisted retry state
+→ advance fake clock
+→ run dispatcher
+→ verify retry
+→ restore Telegram
+→ verify success
+→ restart
+→ verify no duplicate resend
+```
 
 ## Exit gate
 
-Controlled test notifications must succeed and monitoring must remain alive during simulated Telegram failure.
+A temporary Telegram outage followed by recovery must lead to eventual delivery of eligible persisted notifications without stopping market monitoring.
+
+Commit:
+
+```text
+Phase R4: durable Telegram retry scheduling
+```
 
 ---
 
-# 15. Phase 9 — New Listing Detection
+# 11. Phase R5 — Correct Listing Delivery Acknowledgement
 
 ## Goal
 
-Automatically detect and onboard new Bybit markets.
-
-## Signals
-
-Use three independent signals.
-
-### Signal A — Instrument registry
-
-Authoritative for currently monitorable markets.
-
-### Signal B — Linear PreLaunch
-
-Detect upcoming derivatives before normal trading begins.
-
-### Signal C — Bybit announcements
-
-Poll announcements periodically and identify listing-related events.
+Make `listing_events.telegram_sent` mean actual confirmed Telegram delivery.
 
 ---
 
-## Listing state machine
+## 11.1 Change listing flow
 
-Recommended states:
+Old conceptual flow:
 
 ```text
-UNKNOWN
-ANNOUNCED
-PRELAUNCH
-TRADING
-MONITORED
+listing event
+→ enqueue
+→ mark listing sent   ❌
 ```
 
-Not every listing will pass through all states.
-
-The implementation must support:
+New flow:
 
 ```text
-UNKNOWN -> TRADING
+listing event
+→ create durable outbox notification
+   origin_type = listing
+   origin_key = event_key
+→ leave telegram_sent = 0
+→ dispatcher sends
+→ Telegram success
+→ in transaction:
+      mark outbox sent
+      mark listing event sent
+```
+
+---
+
+## 11.2 `reconcile_unsent()` behavior
+
+On startup:
+
+```text
+listing event unsent
+```
+
+must be reconciled with the outbox.
+
+Do not blindly create duplicate notifications.
+
+Pseudo-rule:
+
+```text
+if listing telegram_sent == 0:
+    if outbox exists and is pending/retry:
+        do nothing; dispatcher owns it
+    elif outbox exists and sent:
+        repair listing telegram_sent = 1
+    elif no outbox exists:
+        create one with deterministic listing dedupe key
+```
+
+This creates self-healing persistence.
+
+---
+
+## 11.3 Failure semantics
+
+If Telegram fails:
+
+```text
+listing telegram_sent stays 0
+outbox becomes retry
+```
+
+If eventually delivered:
+
+```text
+outbox = sent
+listing telegram_sent = 1
+```
+
+---
+
+## Required tests
+
+1. Enqueue does not mark listing sent.
+2. Failed delivery does not mark listing sent.
+3. Successful delivery marks both records.
+4. Restart with retry row creates no duplicate outbox row.
+5. Restart with unsent listing but missing outbox repairs the missing outbox.
+6. Restart with sent outbox but stale listing flag repairs the listing flag.
+7. Real `Application._notify_listing` production path works.
+
+---
+
+## Loop
+
+```text
+create listing
+→ inspect listing + outbox
+→ fail Telegram
+→ inspect states
+→ restart
+→ recover
+→ succeed
+→ inspect both states
+→ repeat for prelaunch/trading/announcement
+```
+
+## Exit gate
+
+Listing delivery status must accurately reflect Telegram success.
+
+Commit:
+
+```text
+Phase R5: listing delivery acknowledgement and recovery
+```
+
+---
+
+# 12. Phase R6 — Bybit API Contract Corrections
+
+## Goal
+
+Align the normalizers and request construction with the actual API shapes used by the application.
+
+Do not change business behavior.
+
+---
+
+## 12.1 Spot instruments request
+
+Refactor:
+
+```python
+get_spot_instruments()
+```
+
+so it requests:
+
+```text
+category=spot
+```
+
+without:
+
+```text
+limit
+cursor
+```
+
+Linear remains paginated.
+
+Do not share a helper that forces pagination params onto all categories unless the helper supports category-specific behavior cleanly.
+
+---
+
+## 12.2 `isPreListing`
+
+Normalize:
+
+```python
+is_pre_listing = (
+    status == "PreLaunch"
+    or boolean_value(raw.get("isPreListing"))
+)
+```
+
+Do not use `preList`.
+
+Implement robust boolean parsing if the API may return boolean-like strings.
+
+---
+
+## 12.3 Announcement model
+
+The domain model should explicitly represent structured announcement data.
+
+Recommended:
+
+```python
+Announcement(
+    id=...,
+    title=...,
+    description=...,
+    type_key=...,
+    type_title=...,
+    tags=(...),
+    timestamp=...,
+    metadata=...
+)
+```
+
+Do not store a nested object into a field typed as a string.
+
+---
+
+## 12.4 Announcement classification
+
+Use structured fields first:
+
+```text
+type_key == "new_crypto"
+listing-related tags
+```
+
+Then use title/description as supplemental evidence.
+
+The goal is:
+
+```text
+identify that this is a listing-related announcement
+```
+
+Do not require perfect symbol extraction for the bot's monitoring correctness.
+
+If only base ticker can be extracted:
+
+```text
+XYZ
+```
+
+record an announcement event using a safe announcement identity.
+
+Do not fabricate:
+
+```text
+XYZUSDT
+```
+
+unless the source actually supports that market pair.
+
+Instrument discovery remains authoritative for actual market onboarding.
+
+---
+
+## 12.5 WebSocket `ts`
+
+Preserve the top-level WebSocket timestamp.
+
+Expected conversion:
+
+```text
+message.ts milliseconds
+→ ticker.timestamp epoch seconds
+```
+
+For delta messages:
+
+```text
+merge data fields
++
+update timestamp from current envelope ts
+```
+
+---
+
+## 12.6 REST/WS fixture parity
+
+Tests should contain examples close to actual payload shapes.
+
+Avoid convenient invented fields that the real API does not send.
+
+---
+
+## Required tests
+
+- Spot request query parameters exact.
+- Two-page Linear pagination still works.
+- `isPreListing=true`.
+- `status=PreLaunch` without flag.
+- Nested announcement type parsing.
+- Tags parsing.
+- Listing classification with title that does not contain `USDT`.
+- WS snapshot top-level `ts`.
+- WS delta top-level `ts`.
+
+---
+
+## Loop
+
+```text
+update fixtures first
+→ run normalizer tests
+→ modify models/normalizer
+→ run REST tests
+→ modify request construction
+→ run listing tests
+→ run WS tests
+→ run full suite
+```
+
+## Exit gate
+
+No supported path depends on fields known to be artifacts of old test fixtures.
+
+Commit:
+
+```text
+Phase R6: Bybit API contract alignment
+```
+
+---
+
+# 13. Phase R7 — Repair Health and Clock Semantics
+
+## Goal
+
+Make health output trustworthy.
+
+---
+
+## 13.1 Discovery success timestamp
+
+In:
+
+```python
+discover_once(now=None)
+```
+
+resolve:
+
+```python
+effective_now = int(time.time())
+```
+
+once at the beginning.
+
+Pass that same value into:
+
+```text
+registry reconciliation
+last_success_at
+events where appropriate
+```
+
+Do not let one component generate a hidden timestamp while another stores `None`.
+
+---
+
+## 13.2 Separate clocks
+
+Use:
+
+```text
+monotonic clock
+```
+
+for:
+
+- connection timeout
+- staleness watchdog
+- elapsed reconnect logic
+
+Use:
+
+```text
+epoch wall clock
+```
+
+for:
+
+- health summaries
+- human timestamps
+- persisted event timestamps
+
+Recommended WebSocket client fields:
+
+```text
+last_message_monotonic
+last_message_at
+```
+
+Where:
+
+```text
+last_message_monotonic = time.monotonic()
+last_message_at = int(time.time())
+```
+
+on each received message.
+
+HealthMonitor uses only:
+
+```text
+last_message_at
+```
+
+Reconnect/stale watchdog uses only:
+
+```text
+last_message_monotonic
+```
+
+---
+
+## 13.3 Negative-age guard
+
+Health age calculation should not silently display negative values from clock anomalies.
+
+If:
+
+```text
+last_seen > now
+```
+
+either:
+
+```text
+clamp to zero
+```
+
+or add an explicit health note.
+
+Preferred:
+
+```text
+max(0, now - last_seen)
+```
+
+plus tests.
+
+---
+
+## Required tests
+
+- `discover_once()` without `now`.
+- Discovery health becomes healthy.
+- WebSocket health age is realistic.
+- Stale watchdog still uses monotonic clock.
+- Fake wall-clock jump does not break reconnect logic.
+- Health summary contains sane ages.
+
+---
+
+## Loop
+
+```text
+write clock tests
+→ split timestamp fields
+→ run WS tests
+→ run health tests
+→ run discovery tests
+→ run full suite
+```
+
+## Exit gate
+
+A health summary must never compare timestamps from different clock domains.
+
+Commit:
+
+```text
+Phase R7: health and clock correctness
+```
+
+---
+
+# 14. Phase R8 — Configuration and WebSocket Lifecycle Cleanup
+
+## Goal
+
+Remove configuration drift and subscription inconsistencies.
+
+---
+
+## 14.1 Spot anchor tolerance
+
+Pass:
+
+```text
+config.spot_anchor_tolerance_seconds
+```
+
+into the actual Spot history anchor query/component.
+
+Add a test that sets an unusual value, such as:
+
+```text
+7 seconds
+```
+
+and proves runtime behavior changes accordingly.
+
+---
+
+## 14.2 Threshold strictness
+
+Remove qualification-time rounding.
+
+Use:
+
+```python
+change_1h > threshold
 ```
 
 directly.
 
----
+Calculation functions may still round for display only.
 
-## Listing event persistence
-
-Recommended table:
-
-```sql
-CREATE TABLE listing_events (
-    event_key TEXT PRIMARY KEY,
-    category TEXT,
-    symbol TEXT,
-    event_type TEXT NOT NULL,
-    first_seen_at INTEGER NOT NULL,
-    telegram_sent INTEGER NOT NULL DEFAULT 0
-);
-```
-
-## Idempotency
-
-A listing event must not resend because of restart.
-
-## Discovery loop
+Tests:
 
 ```text
-poll announcements
-+
-poll instruments
--> compare with previous state
--> detect transition
--> persist event
--> notify once if configured
--> reconcile monitoring registry
--> repeat
+5.0000000 -> false
+5.0000001 -> true
 ```
-
-## Required tests
-
-- New `PreLaunch` market.
-- `PreLaunch -> Trading`.
-- Direct `UNKNOWN -> Trading`.
-- Restart after event.
-- Duplicate API result.
-- Delisted/removed market.
-
-## Exit gate
-
-No duplicate listing storm may occur after restart.
 
 ---
 
-# 16. Phase 10 — WebSocket Live Upgrade
+## 14.3 Reconnect configuration
 
-## Goal
+Decide explicitly:
 
-Replace REST polling as the primary live price feed without changing the already-tested business logic.
+### Preferred policy
 
-## Final data architecture
+24/7 monitoring should keep trying forever.
+
+Use:
 
 ```text
-                 REST
-                  |
-       discovery/reconciliation
-                  |
-                  v
-             Market State
-                  ^
-                  |
-              WebSocket
-              live tickers
+bounded/capped backoff
 ```
 
-REST remains required.
+but no terminal reconnect-attempt count.
 
-WebSocket does not replace discovery or recovery logic.
+If choosing this policy:
+
+- remove `ws_reconnect_max_attempts` from configuration and docs, or
+- rename it if it serves another purpose.
+
+Do not retain a setting that is not enforced.
 
 ---
 
-## Required WebSocket connections
+## 14.4 Subscription filtering
 
-Maintain separate public connections for:
-
-```text
-Spot
-Linear
-```
-
-## Subscription generation
-
-Generate ticker topics from the current instrument registry.
-
-Example:
+For desired Linear subscriptions:
 
 ```text
-tickers.BTCUSDT
-tickers.ETHUSDT
-...
+status == Trading
+AND
+settleCoin matches enabled flags
 ```
-
-Batch subscription requests according to Bybit limits.
-
-When a new instrument becomes tradable:
-
-```text
-registry detects market
--> subscription manager updates
--> new ticker topic is subscribed
--> monitoring starts
-```
-
-No restart allowed.
-
----
-
-## Delta-handling requirement
-
-If a derivatives ticker update is a delta:
-
-```python
-latest = previous.copy()
-latest.update(delta)
-```
-
-Do not replace the full ticker snapshot with a partial delta.
-
----
-
-## Heartbeat
-
-Maintain heartbeat/ping logic.
-
-Recommended interval:
-
-```text
-approximately 20 seconds
-```
-
-## Reconnection loop
-
-```text
-connected
--> process data
--> detect disconnect/staleness
--> mark connection unhealthy
--> reconnect with bounded backoff
--> rebuild subscriptions
--> run REST reconciliation
--> continue
-```
-
-## Stale-stream watchdog
-
-Track:
-
-```text
-last_spot_message_at
-last_linear_message_at
-```
-
-If a stream becomes unexpectedly stale:
-
-```text
-mark unhealthy
--> activate REST fallback
--> reconnect WebSocket
-```
-
-## Exit gate
-
-Manually break the WebSocket/network.
-
-The system must:
-
-- recover automatically
-- restore subscriptions
-- preserve state
-- avoid duplicate alerts caused by reconnection
-
----
-
-# 17. Phase 11 — Reliability and Persistence
-
-## Goal
-
-Ensure the bot can run continuously.
-
-## SQLite configuration
-
-Recommended:
-
-```text
-WAL mode
-foreign keys ON
-transactions
-indexes
-busy timeout
-periodic cleanup
-```
-
-## Persist at minimum
-
-- Instrument registry.
-- Spot price history.
-- Alert state.
-- Alert fingerprint.
-- Last hourly alert bucket.
-- Listing events.
-- Sent notification records.
-- Important health timestamps.
-
-## Important rule
-
-Do not rely only on volatile memory such as:
-
-```python
-last_alert = {}
-```
-
-for behavior that must survive restart.
-
-## Graceful shutdown
-
-On termination:
-
-```text
-stop loops
--> stop accepting new queue work
--> flush outgoing alerts
--> commit database
--> close WebSockets
--> close HTTP clients
--> exit
-```
-
-## Required recovery tests
-
-- Restart after alert.
-- Restart while active range is 1-3.
-- Restart during 4+ suppressed state.
-- Restart after new-listing notification.
-- Restart with Spot price history.
-- Database busy/lock simulation.
-
-## Exit gate
-
-Restart must not create duplicate alerts or lose required state.
-
----
-
-# 18. Phase 12 — Health Monitoring and Observability
-
-## Goal
-
-Make unattended operation diagnosable.
-
-## Structured logging
 
 Examples:
 
 ```text
-event=ticker_update
-category=linear
-symbol=BTCUSDT
+enable_linear_usdt = true
+enable_linear_usdc = false
+→ do not subscribe USDC linear symbols
 ```
+
+Spot topics require:
 
 ```text
-event=alert_decision
-qualifying_count=2
-state=ACTIVE_RANGE
-action=SEND
+enable_spot = true
 ```
-
-```text
-event=ws_reconnect
-stream=linear
-attempt=3
-```
-
-Do not log every high-frequency WebSocket tick in production.
 
 ---
 
-## Health state
+## 14.5 Subscription removal
 
-Track:
+When a market is no longer desired:
 
 ```text
-Bybit REST healthy?
-Spot WebSocket healthy?
-Linear WebSocket healthy?
-Telegram healthy?
-Database healthy?
-Last Spot ticker age
-Last Linear ticker age
-Last discovery age
-Active Spot instrument count
-Active Linear USDT count
-Active Linear USDC count
-Qualifying unique coin count
-Telegram queue depth
+registry reconciliation
+→ desired set changes
 ```
 
-## Periodic health summary
+the WebSocket manager must reconcile actual/desired subscriptions.
 
-Example:
+Acceptable strategies:
+
+1. Send unsubscribe requests for removed topics.
+2. Reconnect the category connection with the new desired subscription set.
+
+Do not allow stale subscriptions to accumulate forever.
+
+---
+
+## 14.6 Task tracking
+
+Audit all `_spawn()` call sites.
+
+Invariant:
 
 ```text
-HEALTH
-------
-Spot instruments: X
-Linear USDT: Y
-Linear USDC: Z
-Spot WS: connected
-Linear WS: connected
-REST: healthy
-Telegram: healthy
-Qualifying coins: 2
-Telegram queue: 0
-Last discovery: 48s ago
+each running task appears once in task registry
 ```
 
-## Implementation loop
+Add a lifecycle test if practical.
+
+---
+
+## Loop
 
 ```text
-run bot
--> inspect logs
--> create controlled failure
--> verify logs explain failure
--> improve diagnostics
--> repeat
+wire tolerance
+→ strict-threshold test
+→ clean config
+→ subscription-filter tests
+→ removal test
+→ task-registration test
+→ full suite
 ```
 
 ## Exit gate
 
-A developer reading logs should be able to identify:
+- No meaningful runtime setting is silently ignored.
+- Enabled market flags control actual WebSocket subscriptions.
+- Removed markets are eventually unsubscribed.
+- Task tracking contains no duplicate references.
 
-- which subsystem failed
-- when it failed
-- whether fallback activated
-- whether it recovered
+Commit:
+
+```text
+Phase R8: configuration and websocket lifecycle hardening
+```
 
 ---
 
-# 19. Phase 13 — Comprehensive Automated Testing
+# 15. Phase R9 — Documentation and Reproducible Environment
 
 ## Goal
 
-Prove business rules and resilience before deployment.
+Make the repository accurately describe how it runs.
 
 ---
 
-## 19.1 Unit tests
+## 15.1 README corrections
 
-Mandatory unit coverage:
+Verify every command/file reference.
 
-- Percentage calculation.
-- Strict 5% threshold.
-- Spot 1-hour anchor selection.
-- Linear `prevPrice1h` calculation.
-- Unique `baseCoin` grouping.
-- Representative-market selection.
-- 1-3 range logic.
-- 4+ suppression.
-- State-machine transitions.
-- Debounce.
-- Cooldowns.
-- Pagination.
-- Config validation.
-- Telegram formatting.
-- Listing event idempotency.
+Known items to check:
+
+- Correct Docker Compose service name.
+- Remove or create referenced `scripts/soak_test.py`.
+- Remove or create referenced `docs/soak-test.md`.
+- Correct test-file references.
+- Document durable retry behavior.
+- Document that 24-hour soak is mandatory before `DONE`.
+
+No README command may refer to a path that does not exist.
 
 ---
 
-## 19.2 Integration tests
+## 15.2 `.env.example`
 
-Mock the Bybit API.
+Ensure it contains every intended user-facing configuration value.
 
-Test:
+Do not include internal/deprecated/dead settings.
+
+No credentials.
+
+---
+
+## 15.3 Dependencies
+
+Create a reproducible dependency artifact.
+
+Acceptable:
 
 ```text
-REST
--> normalizer
--> momentum engine
--> unique coin aggregator
--> state machine
--> Telegram queue
+requirements.txt = pinned tested versions
 ```
 
-Also test:
+or:
 
 ```text
-WebSocket
--> market state
--> momentum engine
--> alert decision
+requirements.in
+requirements.lock / compiled requirements.txt
+```
+
+Record the exact versions used for final acceptance.
+
+Do not upgrade unrelated packages during remediation unless required.
+
+---
+
+## 15.4 Status documentation
+
+Update:
+
+```text
+SOAK.md
+AUDIT_REMEDIATION_STATUS.md
+```
+
+The project must remain:
+
+```text
+NOT PRODUCTION READY
+```
+
+until Phase R12 succeeds.
+
+---
+
+## Loop
+
+```text
+read README line by line
+→ verify every command/path against repo
+→ fix drift
+→ create clean venv/container from dependency file
+→ install
+→ run tests
+```
+
+## Exit gate
+
+A clean machine/container can follow README and reproduce the test environment.
+
+Commit:
+
+```text
+Phase R9: documentation and dependency reproducibility
 ```
 
 ---
 
-## 19.3 Critical alert scenario
+# 16. Phase R10 — Full Recovery and Chaos Validation
 
-Input:
+## Goal
+
+Prove the repaired reliability model under controlled failures.
+
+---
+
+## 16.1 Required automated recovery scenarios
+
+### Alert atomicity
 
 ```text
+transition decided
+→ injected DB failure
+→ no half-committed state
+```
+
+### Crash recovery
+
+```text
+outbox committed
+→ process terminated before send
+→ restart
+→ notification delivered
+```
+
+### Telegram temporary failure
+
+```text
+notification pending
+→ Telegram unavailable
+→ retry persisted
+→ Telegram restored
+→ delivery succeeds
+```
+
+### Listing failure
+
+```text
+new listing
+→ Telegram unavailable
+→ listing remains unsent
+→ restart
+→ no duplicate outbox
+→ Telegram restored
+→ delivered
+→ listing marked sent
+```
+
+### 429
+
+```text
+Telegram returns retry_after
+→ next_attempt_at honors delay
+```
+
+### Duplicate event
+
+```text
+same alert/listing processed twice
+→ one logical outbox row
+```
+
+### Database busy/lock
+
+Retain existing busy-lock tests and make sure new transactional logic does not create deadlocks.
+
+### WebSocket disconnect
+
+```text
+disconnect
+→ REST remains available
+→ WS reconnects
+→ subscriptions restored
+→ no duplicate alert caused by reconnect
+```
+
+### Stale stream
+
+```text
+connection appears open
+→ no messages
+→ watchdog detects stale
+→ reconnect/reconcile
+```
+
+---
+
+## 16.2 Critical market-state sequence
+
+Run:
+
+```text
+0 qualifying
+↓
 BTC +6%
-ETH +7%
-SOL +8%
+↓
+wait less than debounce
+↓
+0 again
 ```
 
 Expected:
 
 ```text
-qualifying count = 3
-alert = YES
-```
-
-Add:
-
-```text
-DOGE +5.5%
-```
-
-Expected:
-
-```text
-qualifying count = 4
-alert = NO
-state = OVER_RANGE
-```
-
-Drop ETH below threshold.
-
-Remaining:
-
-```text
-BTC +6%
-SOL +8%
-DOGE +5.5%
-```
-
-Expected:
-
-```text
-qualifying count = 3
-state returns to ACTIVE_RANGE
-alert = YES
-```
-
----
-
-## 19.4 Cross-market duplicate scenario
-
-Input:
-
-```text
-XYZ Spot   +6%
-XYZ USDT   +9%
-XYZ USDC   +8%
-```
-
-Expected:
-
-```text
-unique coins = 1
-representative = XYZ USDT +9%
-```
-
----
-
-## 19.5 Restart scenario
-
-1. Trigger alert.
-2. Stop bot.
-3. Restart bot.
-4. Feed unchanged market state.
-
-Expected:
-
-```text
-no duplicate live transition alert caused only by restart
-```
-
----
-
-## 19.6 Listing scenario
-
-Inject:
-
-```text
-ABCUSDT PreLaunch
+zero messages
 ```
 
 Then:
 
 ```text
-ABCUSDT Trading
+0
+↓
+BTC +6%
+↓
+20 sec stable
 ```
 
 Expected:
 
-- One prelaunch event.
-- One trading-live event.
-- Automatic monitoring.
-- No duplicate event after restart.
+```text
+1 transition
+```
+
+Then:
+
+```text
+BTC + ETH + SOL = 3
+```
+
+No immediate duplicate unless composition policy explicitly allows it after cooldown.
+
+Then:
+
+```text
+BTC + ETH + SOL + DOGE = 4
+```
+
+Expected:
+
+```text
+suppressed
+```
+
+Then:
+
+```text
+ETH drops
+→ 3 remain
+→ debounce
+```
+
+Expected:
+
+```text
+one re-entry alert
+```
 
 ---
 
-## 19.7 Chaos scenarios
+## 16.3 Cross-market dedup
 
-Simulate:
+Input:
 
 ```text
-Bybit HTTP timeout
-Bybit HTTP 5xx
-Bybit non-zero retCode
-invalid JSON
-WebSocket disconnect
-WebSocket stale stream
-Telegram timeout
-Telegram HTTP 429
-SQLite busy/lock
-application restart
+XYZ Spot +6%
+XYZ USDT +9%
+XYZ USDC +8%
 ```
 
-The application must recover or fail safely.
+Expected:
 
-## Exit gate
-
-All mandatory unit, integration, state-machine, restart, and chaos tests must pass.
+```text
+1 unique coin
+representative = strongest valid market
+```
 
 ---
 
-# 20. Phase 14 — Docker and Deployment
-
-## Goal
-
-Make deployment reproducible and persistent.
-
-## Required files
+## Loop
 
 ```text
-Dockerfile
-docker-compose.yml
-.env.example
-```
-
-## Container requirements
-
-- Run as non-root.
-- Persistent `/data` volume.
-- Graceful SIGTERM.
-- Restart policy.
-- Healthcheck.
-- No secrets baked into image.
-
-Recommended:
-
-```yaml
-restart: unless-stopped
-```
-
-## Runtime layout
-
-```text
-container
-|
-|-- application
-`-- /data
-    `-- bybit_monitor.sqlite
-```
-
-## Deployment test
-
-Perform:
-
-```text
-docker compose up
--> verify monitoring
--> restart container
--> verify state persistence
--> stop/start stack
--> verify no duplicate listing or momentum storm
+run one fault scenario
+→ inspect DB rows
+→ inspect logs
+→ inspect emitted messages
+→ restart
+→ re-check rows
+→ fix
+→ rerun
 ```
 
 ## Exit gate
 
-Docker restart must preserve:
+All automated unit/integration/recovery/chaos tests pass repeatedly.
 
-- database
-- Spot history
-- alert state
-- listing state
+Run full suite at least:
+
+```text
+3 consecutive times
+```
+
+with identical success.
+
+Store outputs:
+
+```text
+artifacts/remediation-full-tests-run1.txt
+artifacts/remediation-full-tests-run2.txt
+artifacts/remediation-full-tests-run3.txt
+```
+
+Commit:
+
+```text
+Phase R10: recovery and chaos acceptance
+```
 
 ---
 
-# 21. Phase 15 — 24-Hour Soak Test
+# 17. Phase R11 — Live Staging Validation
 
 ## Goal
 
-Validate stability under realistic continuous operation.
+Validate the corrected code against live public Bybit data and a controlled Telegram destination before the long soak.
 
-Run continuously for at least 24 hours.
+Use real Telegram credentials only through local/runtime secrets.
 
-Monitor:
+Never commit them.
+
+---
+
+## 17.1 Pre-flight
+
+Verify:
 
 ```text
-instrument counts
-memory usage
-CPU usage
+git status clean
+no .env tracked
+all tests pass
+Docker image builds
+container runs non-root
+persistent data volume exists
+```
+
+---
+
+## 17.2 Live Bybit validation
+
+Record actual runtime counts:
+
+```text
+Spot Trading instruments
+Linear USDT Trading
+Linear USDC Trading
+Linear PreLaunch
+```
+
+Confirm:
+
+- Spot request works without pagination args.
+- Linear pagination completes.
+- WebSocket Spot connects.
+- WebSocket Linear connects.
+- Ticker timestamps are non-zero and sane.
+- REST discovery health is healthy.
+- WS ticker ages are sane.
+- Automatic subscription sync is working.
+
+---
+
+## 17.3 Controlled Telegram delivery
+
+Send:
+
+1. Manual test notification.
+2. Synthetic transition alert through normal application path.
+3. Synthetic listing event through normal application path.
+
+Do not call the Telegram client directly for all tests; at least one must exercise:
+
+```text
+business event
+→ outbox
+→ dispatcher
+→ Telegram
+→ persisted success
+```
+
+Inspect DB afterward.
+
+---
+
+## 17.4 Controlled Telegram outage
+
+Temporarily use a controlled failure mechanism.
+
+Expected:
+
+```text
+monitoring continues
+notification moves to retry
+listing not marked sent
+```
+
+Restore Telegram.
+
+Expected:
+
+```text
+notification succeeds
+listing delivery state repaired
+```
+
+---
+
+## 17.5 Container restart
+
+Restart while:
+
+```text
+outbox has pending/retry work
+```
+
+Verify recovery.
+
+Also restart during normal operation and inspect for:
+
+```text
+duplicate transition
+duplicate hourly alert
+duplicate listing storm
+```
+
+---
+
+## Exit gate
+
+Create:
+
+```text
+STAGING_VALIDATION.md
+```
+
+containing evidence and timestamps.
+
+Do not proceed to 24-hour soak if any P0/P1 behavior fails.
+
+Commit documentation only if code is unchanged.
+
+---
+
+# 18. Phase R12 — Clean 24-Hour Soak Test
+
+## Goal
+
+Actually satisfy the previously incomplete acceptance requirement.
+
+**This phase requires at least 24 elapsed hours.**
+
+Do not simulate completion.
+
+Do not mark `DONE` early.
+
+---
+
+## 18.1 Start conditions
+
+The 24-hour clock starts only after:
+
+- All remediation tests pass.
+- Live staging validation passes.
+- Container is running the final candidate commit.
+- No code changes occur after the soak starts.
+
+If code changes during the soak:
+
+```text
+restart the 24-hour soak clock
+```
+
+---
+
+## 18.2 Record metadata
+
+At soak start record:
+
+```text
+START UTC:
+COMMIT HASH:
+IMAGE ID:
+PYTHON VERSION:
+DEPENDENCY LOCK HASH:
+DATABASE PATH:
+```
+
+---
+
+## 18.3 Monitor
+
+At minimum:
+
+```text
+CPU
+memory
 database size
-database cleanup
-WebSocket reconnects
+price sample count
+outbox pending count
+outbox retry count
+outbox dead count
+Telegram sends
+Telegram retry events
 REST errors
-Telegram retries
+WS reconnects
+last ticker ages
+discovery age
+instrument counts
+qualifying unique coin count
+listing events
 duplicate alerts
-Spot history quality
-new-listing reconciliation
-alert-state transitions
 ```
 
-## Required interventions during soak test
+---
 
-Perform at least:
+## 18.4 Mandatory interventions
 
-- Several manual container restarts.
-- One temporary network interruption.
-- One forced WebSocket reconnect.
-- One Telegram failure simulation if possible.
-- One application restart during an active 1-3 state.
+Perform during the 24-hour window:
 
-## Acceptance behavior
+1. At least 3 controlled container restarts.
+2. One temporary network interruption.
+3. One forced Spot WS reconnect.
+4. One forced Linear WS reconnect.
+5. One controlled Telegram failure followed by recovery.
+6. One restart while at least one durable outbox message is pending/retry, using a synthetic message if the market does not naturally provide the state.
+7. One restart while the alert state is simulated as `ACTIVE_RANGE`.
+8. Verify Spot history remains useful after restart.
 
-After restart or reconnect:
+Synthetic test events must be clearly labeled and must not contaminate real market interpretation.
+
+---
+
+## 18.5 Failure criteria
+
+The soak fails if any of these occur:
 
 ```text
-instrument registry restores
-Spot history restores
-alert state restores
-WebSockets reconnect
-subscriptions restore
-REST reconciliation executes
-no false new-listing storm
-no duplicate Telegram storm
+process dies and does not recover
+database corruption
+unbounded memory growth
+large unbounded outbox growth
+duplicate alert storm
+false new-listing storm
+pending/retry messages disappear
+listing marked delivered when Telegram failed
+WS remains stale without recovery
+REST discovery stops permanently
+health ages become nonsensical
+4+ qualifying coins produce range alerts
+debounce is bypassed
 ```
+
+---
+
+## 18.6 Success criteria
+
+After at least 24 elapsed hours:
+
+```text
+service still healthy
+state persisted across interventions
+no release-blocking defect reproduced
+no unexplained notification loss
+no duplicate storm
+Spot history valid
+new listing system healthy
+outbox drained/retrying correctly
+```
+
+Update:
+
+```text
+SOAK.md
+```
+
+with actual findings.
 
 ## Exit gate
 
-Document soak-test findings before marking production-ready.
-
----
-
-# 22. Phase 16 — Final Acceptance Checklist
-
-The AI agent may mark the project `DONE` only when every applicable item is verified.
-
-## Market coverage
-
-- [ ] All active Bybit Spot markets are discovered.
-- [ ] All Linear USDT-settled contracts are discovered.
-- [ ] All Linear USDC-settled contracts are discovered.
-- [ ] Linear pagination works across all pages.
-- [ ] Linear `PreLaunch` instruments are detected.
-- [ ] Newly trading instruments are automatically monitored.
-- [ ] No restart is required for newly listed instruments.
-
-## Momentum logic
-
-- [ ] Linear 1-hour percentage is calculated correctly.
-- [ ] Spot 1-hour percentage uses persisted history.
-- [ ] Spot warm-up state is handled safely.
-- [ ] Exactly +5.000% does not qualify.
-- [ ] Any value greater than +5.000% qualifies.
-
-## Unique coin logic
-
-- [ ] Duplicate markets for one `baseCoin` count once.
-- [ ] Representative market selection works.
-- [ ] Raw contract count is never used for the range rule.
-
-## Alert rules
-
-- [ ] 0 unique qualifying coins = no group alert.
-- [ ] 1 unique qualifying coin = alert.
-- [ ] 2 unique qualifying coins = alert.
-- [ ] 3 unique qualifying coins = alert.
-- [ ] 4+ unique qualifying coins = suppressed.
-- [ ] 4+ returning to 1-3 can reactivate alerts.
-- [ ] Debounce works.
-- [ ] Cooldown works.
-- [ ] Hourly active-state messages work.
-- [ ] Hourly state survives restart.
-
-## Telegram
-
-- [ ] Telegram messages are readable.
-- [ ] Long messages split safely.
-- [ ] Telegram outage does not stop monitoring.
-- [ ] Telegram retries are bounded.
-- [ ] Secrets never appear in logs.
-
-## Reliability
-
-- [ ] REST failures do not crash the bot.
-- [ ] WebSocket disconnects recover automatically.
-- [ ] Stale WebSocket detection works.
-- [ ] REST fallback/reconciliation works.
-- [ ] Alert state survives restart.
-- [ ] Listing state survives restart.
-- [ ] Spot history survives restart.
-- [ ] SQLite persistence works.
-- [ ] Docker persistence works.
-
-## Security
-
-- [ ] No production secrets exist in Git.
-- [ ] `.env` is ignored.
-- [ ] `.env.example` contains placeholders only.
-- [ ] Container runs as non-root.
-- [ ] No secrets appear in documentation or screenshots.
-
-## Testing
-
-- [ ] Unit tests pass.
-- [ ] Integration tests pass.
-- [ ] State-machine tests pass.
-- [ ] Pagination tests pass.
-- [ ] Restart tests pass.
-- [ ] Listing tests pass.
-- [ ] Chaos/recovery tests pass.
-- [ ] 24-hour soak test passes.
-
----
-
-# 23. Mandatory Agent Execution Loop
-
-The coding agent must follow this loop for every phase.
+Only now may:
 
 ```text
-READ CURRENT PHASE
-        |
-        v
-IMPLEMENT SMALLEST WORKING SLICE
-        |
-        v
-RUN TESTS
-        |
-        v
-INSPECT ACTUAL RESULTS
-        |
-        v
-IDENTIFY FAILURES
-        |
-        v
-FIX ROOT CAUSE
-        |
-        v
-RUN TESTS AGAIN
-        |
-        v
-DOCUMENT RESULT
-        |
-        v
-ONLY THEN MOVE TO NEXT PHASE
+24-hour soak test passes = TRUE
 ```
 
-Do not:
+be checked.
+
+---
+
+# 19. Phase R13 — Final Acceptance and Release Candidate Handoff
+
+## Goal
+
+Perform a complete post-remediation audit before marking `DONE`.
+
+---
+
+## 19.1 Final test command
+
+Run the complete suite in a clean environment.
+
+Save:
 
 ```text
-implement several phases
--> run one superficial test
--> claim completion
+artifacts/final-test-results.txt
 ```
 
 ---
 
-# 24. Mandatory Phase Completion Report
+## 19.2 Security sweep
 
-After every phase, the AI agent must output:
+Verify:
+
+```text
+no .env tracked
+no Telegram token
+no chat ID
+no private keys
+no accidental runtime DB with secrets
+no logs containing secrets
+container non-root
+```
+
+---
+
+## 19.3 Database migration test
+
+Test:
+
+```text
+fresh database
+→ all migrations
+```
+
+and:
+
+```text
+database created by old release candidate
+→ new migrations
+→ application starts
+→ data preserved
+```
+
+This is mandatory.
+
+---
+
+## 19.4 Final acceptance checklist
+
+### P0 defects
+
+- [ ] Listing production formatter wiring fixed.
+- [ ] Debounce cannot be bypassed by hourly alert.
+- [ ] Alert state + outbox commit atomically.
+- [ ] Retryable Telegram failures persist and retry.
+- [ ] Listing is marked sent only after delivery.
+
+### P1 correctness
+
+- [ ] Real announcement shape supported.
+- [ ] `isPreListing` supported.
+- [ ] Spot instruments request sends no pagination args.
+- [ ] Linear pagination still complete.
+- [ ] Discovery health timestamp correct.
+- [ ] Health uses consistent clock domains.
+- [ ] WebSocket top-level `ts` preserved.
+
+### P2 hardening
+
+- [ ] Spot anchor tolerance configuration wired.
+- [ ] Strict `>5.0` comparison does not pre-round.
+- [ ] Reconnect configuration has real semantics.
+- [ ] WebSocket subscriptions respect market flags.
+- [ ] Removed subscriptions reconcile.
+- [ ] No duplicate task tracking.
+- [ ] README references are valid.
+- [ ] Dependencies reproducible.
+
+### Reliability
+
+- [ ] Crash after outbox commit recovers.
+- [ ] No half-committed state/outbox.
+- [ ] Retry rows survive restart.
+- [ ] Listing retries survive restart.
+- [ ] 429 delay honored.
+- [ ] WebSocket disconnect recovery works.
+- [ ] Stale-stream recovery works.
+- [ ] SQLite lock tests pass.
+
+### Business behavior
+
+- [ ] Exactly +5.0% does not qualify.
+- [ ] >+5.0% qualifies.
+- [ ] Markets deduplicate by `baseCoin`.
+- [ ] 0 unique coins = no alert.
+- [ ] 1 unique coin = active.
+- [ ] 2 unique coins = active.
+- [ ] 3 unique coins = active.
+- [ ] 4+ unique coins = suppressed.
+- [ ] 4+ → 1–3 re-entry is debounced.
+- [ ] Hourly alert does not bypass debounce.
+
+### Deployment
+
+- [ ] Docker build reproducible.
+- [ ] Container non-root.
+- [ ] Persistent database works.
+- [ ] Live staging passed.
+- [ ] Clean 24-hour soak actually elapsed and passed.
+
+---
+
+## 19.5 Definition of `DONE`
+
+The agent may output:
+
+```text
+STATUS: DONE
+PRODUCTION READY: YES
+```
+
+only when every mandatory checklist item is verified.
+
+If the 24-hour soak has not elapsed:
+
+```text
+STATUS: SOAK IN PROGRESS
+PRODUCTION READY: NO
+```
+
+No exception.
+
+---
+
+# 20. Mandatory Agent Phase Report
+
+After every phase, output exactly this structure:
 
 ```text
 PHASE:
-STATUS:
+STATUS: COMPLETE | BLOCKED | IN PROGRESS
+
+BASE COMMIT:
+NEW COMMIT:
 
 FILES CREATED:
 - ...
@@ -2055,16 +2677,26 @@ FILES CREATED:
 FILES CHANGED:
 - ...
 
-WHAT WAS IMPLEMENTED:
+DEFECTS ADDRESSED:
+- ...
+
+REGRESSION TESTS ADDED:
 - ...
 
 TESTS RUN:
-- ...
+- command
+- command
 
 TEST RESULTS:
 - ...
 
-MANUAL VALIDATION:
+FAULT INJECTION PERFORMED:
+- ...
+
+DATABASE MIGRATION IMPACT:
+- ...
+
+MANUAL/LIVE VALIDATION:
 - ...
 
 KNOWN ISSUES:
@@ -2073,277 +2705,317 @@ KNOWN ISSUES:
 ASSUMPTIONS:
 - ...
 
-TECHNICAL DEBT:
+REMAINING RISKS:
 - ...
 
 NEXT PHASE:
 - ...
 ```
 
-If tests fail:
+If a phase is blocked:
 
 ```text
 STATUS: BLOCKED
 ```
 
-Do not proceed until the blocking failure is resolved unless explicitly authorized.
+and explain exactly what prevents completion.
+
+Do not silently move forward.
 
 ---
 
-# 25. Final Runtime Architecture
+# 21. Mandatory Commit Discipline
 
-The final production architecture should resemble:
+Use one commit per successfully completed remediation phase.
 
-```text
-                         BYBIT
-                           |
-             +-------------+-------------+
-             |                           |
-           REST                      WEBSOCKET
-             |                           |
-     +-------+--------+          +-------+-------+
-     |       |        |          |               |
- Instruments Tickers Listings   Spot           Linear
-     |                          ticker WS       ticker WS
-     |                                           |
-     +----------------+--------------------------+
-                      |
-                      v
-               NORMALIZED MARKET
-                    STATE
-                      |
-          +-----------+------------+
-          |                        |
-    SPOT 1H HISTORY        DERIVATIVE 1H
-          |                prevPrice1h
-          +-----------+------------+
-                      |
-                      v
-                MOMENTUM ENGINE
-                      |
-                 change > 5%
-                      |
-                      v
-              GROUP BY baseCoin
-                      |
-                      v
-            UNIQUE QUALIFYING COINS
-                      |
-          +-----------+-----------+
-          |           |           |
-          0          1-3          4+
-          |           |           |
-       SILENT       ACTIVE      SUPPRESS
-                      |
-                      v
-                STATE MACHINE
-                      |
-          +-----------+-----------+
-          |                       |
-      live transition        hourly active
-          |                       |
-          +-----------+-----------+
-                      |
-                      v
-               TELEGRAM QUEUE
-                      |
-                      v
-                  TELEGRAM
-```
-
----
-
-# 26. Architectural Boundaries
-
-The final system must keep these concerns separate.
-
-## Bybit ingestion
-
-Responsible only for:
-
-- REST requests.
-- WebSocket connections.
-- Reconnection.
-- Parsing.
-- Normalization.
-
-It must not decide whether Telegram should alert.
-
-## Instrument registry
-
-Responsible for:
-
-- Instrument identity.
-- Status.
-- Settlement currency.
-- Listing lifecycle.
-- Discovery.
-
-## Price engine
-
-Responsible for:
-
-- Latest price state.
-- Spot history.
-- Derivative reference prices.
-- 1-hour calculations.
-
-## Momentum engine
-
-Responsible for:
+Recommended messages:
 
 ```text
-change_1h > threshold
+Phase R1: audit regression tests
+Phase R2: listing wiring and debounce correctness
+Phase R3: atomic alert state and durable outbox
+Phase R4: durable Telegram retry scheduling
+Phase R5: listing delivery acknowledgement and recovery
+Phase R6: Bybit API contract alignment
+Phase R7: health and clock correctness
+Phase R8: configuration and websocket lifecycle hardening
+Phase R9: documentation and dependency reproducibility
+Phase R10: recovery and chaos acceptance
+Phase R11: live staging validation evidence
+Phase R12: completed 24-hour soak evidence
+Phase R13: final acceptance
 ```
 
-only.
-
-## Deduplication engine
-
-Responsible for:
-
-```text
-instrument -> unique baseCoin
-```
-
-## Alert state machine
-
-Responsible for:
-
-```text
-0
-1-3
-4+
-```
-
-and transition/cooldown behavior.
-
-## Telegram dispatcher
-
-Responsible only for delivery.
-
-This separation is mandatory because it makes the system testable and prevents API/network failures from contaminating alert logic.
-
----
-
-# 27. Definition of Done
-
-The bot is not considered complete because:
-
-```text
-it runs
-```
-
-or because:
-
-```text
-a Telegram message was received
-```
-
-It is complete only when:
-
-1. Market discovery is comprehensive.
-2. Pagination is correct.
-3. New listings are automatic.
-4. Momentum calculations are mathematically correct.
-5. Spot history survives restart.
-6. Unique-coin aggregation is correct.
-7. The 1-3 range rule passes all tests.
-8. 4+ suppression works.
-9. Telegram delivery is decoupled.
-10. WebSocket recovery works.
-11. REST fallback works.
-12. Persistent state prevents duplicate alerts.
-13. Docker deployment survives restart.
-14. Automated tests pass.
-15. Chaos tests pass.
-16. The 24-hour soak test passes.
-17. Final acceptance checklist is complete.
-
----
-
-# 28. Handoff Requirements
-
-When implementation is complete, prepare a review package containing:
-
-```text
-project ZIP
-+
-full AI-agent implementation session/transcript
-+
-final test output
-+
-24-hour soak-test notes
-+
-README deployment instructions
-```
-
-The ZIP should not include:
+Never commit:
 
 ```text
 .env
-Telegram token
-Telegram chat ID
-private credentials
-temporary cache files
-unnecessary virtual environments
+live Telegram credentials
+runtime secrets
+temporary virtual environments
+large transient logs
+production SQLite DB unless explicitly intended
 ```
-
-Recommended review package:
-
-```text
-bybit-monitor.zip
-agent-session.txt or agent-session.md
-test-results.txt
-soak-test.md
-```
-
-This package will be used for an independent code and implementation audit.
 
 ---
 
-# 29. Final Instruction to the Coding Agent
+# 22. Recommended Implementation Details for the Atomic Outbox
 
-**Accuracy is more important than speed.**
+This section is guidance for the difficult P0 persistence repair.
 
-Do not optimize early.
+The exact implementation may differ, but all invariants must hold.
 
-First prove:
+---
 
-```text
-discovery correctness
--> momentum correctness
--> unique-coin correctness
--> alert-state correctness
--> persistence correctness
-```
+## 22.1 Pure decision object
 
-Then add:
-
-```text
-WebSocket performance
--> deployment
--> operational hardening
-```
-
-If any implementation decision is uncertain, prefer the design that is:
-
-1. Easier to test.
-2. Easier to recover.
-3. Easier to inspect.
-4. Less likely to produce duplicate alerts.
-5. Less likely to silently miss newly listed markets.
-
-The authoritative Telegram alert condition remains:
+A decision should contain enough information to persist later:
 
 ```python
-1 <= unique_qualifying_base_coins <= 3
+AlertDecision(
+    previous_state=...,
+    next_state=...,
+    qualifying_count=...,
+    fingerprint=...,
+    kind=...,
+    should_notify=...,
+    transition_reason=...,
+    hourly_bucket=...,
+    ...
+)
 ```
 
-where each qualifying base coin has at least one supported Bybit market with:
+Do not mutate durable state inside the calculation stage.
+
+---
+
+## 22.2 Atomic coordinator
+
+Conceptual flow:
 
 ```python
-change_1h > 5.0
+decision = state_machine.evaluate(current_state, qualifying, now)
+
+async with db.transaction():
+    await alert_state_repo.save_no_commit(decision.next_state)
+
+    if decision.should_notify:
+        await notification_repo.insert_no_commit(
+            dedupe_key=...,
+            tag=decision.kind,
+            message=...,
+            status="pending",
+            ...
+        )
 ```
 
-This requirement must never be weakened, approximated, or replaced by raw symbol count.
+After commit:
+
+```text
+dispatcher wakeup / queue scheduling
+```
+
+The queue is an optimization.
+
+The database outbox is the source of truth.
+
+---
+
+## 22.3 Queue-loss safety
+
+If:
+
+```text
+DB commit succeeds
+```
+
+but:
+
+```text
+process crashes before asyncio.Queue.put(...)
+```
+
+the record must still be delivered after restart.
+
+Therefore the dispatcher must periodically or on wakeup query the durable outbox.
+
+Do not rely solely on one-time startup requeue.
+
+Recommended:
+
+```text
+dispatcher poll due outbox every 1–5 seconds
+```
+
+or a wake-event + periodic safety poll.
+
+This also naturally handles delayed retries.
+
+---
+
+## 22.4 Dispatcher claim semantics
+
+With one process, a simple design is enough.
+
+Optional safe fields:
+
+```text
+status = pending/retry
+```
+
+Select due rows.
+
+Before sending, optionally update:
+
+```text
+last_attempt_at
+attempt_count
+```
+
+After success:
+
+```text
+sent
+```
+
+After retryable failure:
+
+```text
+retry
+next_attempt_at = ...
+```
+
+Because only one dispatcher worker exists, complex distributed leases are unnecessary.
+
+Do not add Redis just for this.
+
+---
+
+# 23. Recommended Test Matrix for the Outbox
+
+| Scenario | Expected DB state |
+|---|---|
+| Alert decision has no notification | state changed only |
+| Alert decision sends | state + pending outbox atomically |
+| Failure before transaction commit | neither persists |
+| Crash after commit | pending survives |
+| Retryable Telegram failure | retry + attempt count |
+| Restart before retry time | no premature send |
+| Retry time reached | message attempted |
+| Telegram success | sent |
+| Restart after success | no resend |
+| Duplicate decision | no duplicate logical outbox |
+| Listing enqueue | listing unsent + outbox pending |
+| Listing failure | listing unsent + outbox retry |
+| Listing success | listing sent + outbox sent |
+
+---
+
+# 24. Explicit Non-Goals During Remediation
+
+Do not add:
+
+- Price charts.
+- Telegram command interface.
+- Web UI.
+- Trading execution.
+- AI market commentary.
+- Portfolio management.
+- Redis.
+- Kubernetes.
+- PostgreSQL migration.
+- Options.
+- Additional exchanges.
+
+The only objective is:
+
+```text
+make the existing bot correct, durable, recoverable, testable, and production-ready
+```
+
+---
+
+# 25. Final Handoff Package
+
+After Phase R13, prepare:
+
+```text
+bybit-monitor-remediated.zip
+agent-remediation-session.md or .json
+AUDIT_REMEDIATION_STATUS.md
+STAGING_VALIDATION.md
+SOAK.md
+artifacts/final-test-results.txt
+README.md
+```
+
+The ZIP must exclude:
+
+```text
+.env
+Telegram credentials
+private secrets
+runtime cache
+virtualenv
+temporary logs
+unnecessary databases
+```
+
+If a sample SQLite database is included for migration testing, it must contain no secrets and be clearly named as a fixture.
+
+---
+
+# 26. Instructions for the Next Independent Audit
+
+The next reviewer should specifically verify:
+
+1. The original five P0 defects cannot be reproduced.
+2. The regression tests truly exercise production paths.
+3. Atomic transaction boundaries are real.
+4. The durable outbox, not `asyncio.Queue`, is the source of truth.
+5. Failed Telegram notifications recover after restart.
+6. Listing success is tied to actual delivery.
+7. Bybit fixtures match real shapes.
+8. Health timestamps are sane.
+9. No business-rule drift occurred.
+10. The 24-hour soak actually elapsed after the final code change.
+
+---
+
+# 27. Final Instruction to the AI Coding Agent
+
+Do not optimize for the number of passing tests.
+
+Optimize for:
+
+```text
+correct invariants
++
+real production paths
++
+failure recovery
++
+persistence correctness
+```
+
+The old repository already had a large green test suite while several production defects remained.
+
+Therefore:
+
+```text
+"tests pass"
+```
+
+is necessary but not sufficient.
+
+Every repaired invariant must be demonstrated by:
+
+```text
+regression test
++
+implementation
++
+fault/restart validation where relevant
+```
+
+The project is not `DONE` until the full remediation checklist and clean 24-hour soak are both complete.
