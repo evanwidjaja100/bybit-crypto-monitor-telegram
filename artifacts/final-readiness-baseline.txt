@@ -1,0 +1,22 @@
+﻿FINAL READINESS BASELINE
+DATE UTC: 2026-08-18 14:55:50
+BRANCH: final-production-readiness
+COMMIT: ac3def86f49cdb65b5100b936f28b92abaf39b73
+
+PYTHON: Python 3.14.6
+DOCKER BASE IMAGE: python:3.13-slim (Dockerfile)
+
+PINNED DEPENDENCIES (requirements.txt):
+# Pinned versions tested for final acceptance (Python 3.14).
+aiosqlite==0.22.1
+httpx==0.28.1
+websockets==17.0.1
+pydantic==2.13.4
+pydantic-settings==2.15.0
+pytest==9.1.1
+pytest-asyncio==1.4.0
+
+GIT STATUS --SHORT:
+ D bybit_telegram_momentum_master_implementation_plan.md
+
+FULL TEST SUITE (unchanged): 283 passed

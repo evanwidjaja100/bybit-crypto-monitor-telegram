@@ -145,6 +145,51 @@ class TestConcurrentDispatcherAndService:
             await dispatcher.stop()
 
 
+class TestConcurrentServiceDispatcherAndSamples:
+    """Phase F1 6.6 - alert service + dispatcher + price-sample writes on
+    one connection: no nested-transaction error, no deadlock, no
+    cross-task execution inside another task's transaction."""
+
+    async def test_concurrent_production_paths_serialize(self, tmp_path, db):
+        from app.persistence.repository import PriceSampleRepository
+
+        cfg = config(tmp_path, dispatcher_poll_seconds=0.02)
+        client = FakeClient()
+        dispatcher = AlertDispatcher(client, Repository(db), cfg)
+        await dispatcher.start()
+        service = AlertService(
+            AlertStateMachine(cfg, AlertStateRepository(db)), dispatcher, cfg
+        )
+        samples = PriceSampleRepository(db)
+        try:
+            async def writer(label: str):
+                for i in range(40):
+                    await samples.insert_sample(
+                        "spot", f"{label}{i}", 10_000 + i, 100.0 + i
+                    )
+                    await samples.find_reference("spot", f"{label}{i}", 10_000 + i, 90)
+                    await asyncio.sleep(0)
+
+            async def decider():
+                for coin_id in range(40):
+                    coins = qset(f"DEC{coin_id}") if coin_id % 2 == 0 else qset()
+                    await service.process(coins, now=2000 + coin_id)
+
+            await asyncio.gather(
+                writer("A"), writer("B"), writer("C"), decider()
+            )
+            await asyncio.sleep(0.5)
+            count = await samples.count()
+            assert count == 120
+            rows = await Repository(db).list_notifications()
+            # 40 cycles alternate EMPTY/ACTIVE: 20 debounced transitions.
+            assert len(rows) == 20
+            assert all(r["status"] == "sent" for r in rows)
+            assert len(client.sent) == 20
+        finally:
+            await dispatcher.stop()
+
+
 class TestCriticalMarketStateSequence:
     """Section 16.2 - the full sequence with the real debounce window."""
 

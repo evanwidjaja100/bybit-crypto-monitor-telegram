@@ -27,8 +27,10 @@ class Database:
         # Serializes access to the single underlying connection so that
         # concurrent tasks (market loop + dispatcher worker) cannot
         # interleave BEGIN/COMMIT or split an execute/commit pair.
+        # Task-aware ownership: while a task owns a transaction, all other
+        # tasks block on the lock; the owner itself may execute reentrantly.
         self._lock: asyncio.Lock = asyncio.Lock()
-        self._in_transaction: bool = False
+        self._tx_owner: Optional[asyncio.Task] = None
 
     @property
     def connected(self) -> bool:
@@ -103,10 +105,17 @@ class Database:
         The connection lock is held for the whole block: no other task can
         BEGIN/COMMIT or execute statements in between. Calls made inside
         the block run on the same connection without re-acquiring the lock.
+
+        Nested top-level transactions are not supported: the owner task
+        that calls ``transaction()`` again gets a clear ``RuntimeError``
+        instead of an accidental SQLite nested BEGIN.
         """
         self._require_connection()
+        current = asyncio.current_task()
+        if current is not None and self._tx_owner is current:
+            raise RuntimeError("nested transaction not supported")
         await self._lock.acquire()
-        self._in_transaction = True
+        self._tx_owner = current
         try:
             await self._conn.execute("BEGIN")  # type: ignore[union-attr]
             try:
@@ -116,13 +125,15 @@ class Database:
                 await self._conn.rollback()  # type: ignore[union-attr]
                 raise
         finally:
-            self._in_transaction = False
+            self._tx_owner = None
             self._lock.release()
 
     @contextlib.asynccontextmanager
     async def _guarded(self) -> AsyncIterator[None]:
-        """Yield with the connection lock unless already inside a transaction."""
-        if self._in_transaction:
+        """Yield with the connection lock unless the owner task is inside a
+        transaction (owner reentrancy) - all other tasks always block."""
+        current = asyncio.current_task()
+        if current is not None and self._tx_owner is current:
             yield
             return
         async with self._lock:
