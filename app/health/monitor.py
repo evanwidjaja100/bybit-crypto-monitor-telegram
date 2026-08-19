@@ -50,6 +50,9 @@ class HealthState:
     #   unhealthy - a critical subsystem failure persisted beyond grace
     overall: str = "healthy"
     critical_issues: list[str] = field(default_factory=list)
+    # Critical issues still inside their grace window (currently failing,
+    # not yet persisted): the container stays degraded, not unhealthy.
+    pending_critical_issues: list[str] = field(default_factory=list)
     degraded_issues: list[str] = field(default_factory=list)
     notes: list[str] = field(default_factory=list)
 
@@ -254,11 +257,14 @@ class HealthMonitor:
             state.overall = "unhealthy"
         elif persisted:
             state.overall = "unhealthy"
-        elif degraded:
+        elif bad or degraded:
+            # A subsystem is currently broken (critical inside its grace
+            # window, or a non-critical issue): never report healthy.
             state.overall = "degraded"
         else:
             state.overall = "healthy"
         state.critical_issues = persisted
+        state.pending_critical_issues = sorted(bad - set(persisted))
         state.degraded_issues = degraded
         if persisted:
             state.notes.append(f"critical: {','.join(sorted(persisted))}")
@@ -295,6 +301,8 @@ class HealthMonitor:
             "last_spot_ticker_age": state.last_spot_ticker_age,
             "last_linear_ticker_age": state.last_linear_ticker_age,
             "critical_issues": state.critical_issues,
+            "pending_critical_issues": state.pending_critical_issues,
+            "degraded_issues": state.degraded_issues,
         }
         await self.repository.kv_set_json("health:snapshot", payload)
 

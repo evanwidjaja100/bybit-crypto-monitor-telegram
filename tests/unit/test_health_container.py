@@ -139,7 +139,9 @@ class TestClassification:
         assert state.overall == "healthy"
         assert state.critical_issues == []
 
-    async def test_spot_ws_stale_becomes_unhealthy_after_grace(self, tmp_path):
+    async def test_short_spot_disconnect_is_degraded(self, tmp_path):
+        """Phase J5 - a spot stream issue inside its grace window must
+        report degraded, never healthy."""
         config = config_with(tmp_path, critical_health_failure_seconds=0.2)
         monitor = make_monitor(
             config,
@@ -148,13 +150,15 @@ class TestClassification:
             ),
         )
         first = await monitor.snapshot()
-        assert first.overall == "healthy"  # within grace
+        assert first.overall == "degraded"
+        assert first.pending_critical_issues == ["spot_ws"]
         await asyncio.sleep(0.3)
         second = await monitor.snapshot()
         assert second.overall == "unhealthy"
-        assert "spot_ws" in second.critical_issues
+        assert second.critical_issues == ["spot_ws"]
+        assert second.pending_critical_issues == []
 
-    async def test_linear_ws_stale_becomes_unhealthy_after_grace(self, tmp_path):
+    async def test_short_linear_disconnect_is_degraded(self, tmp_path):
         config = config_with(tmp_path, critical_health_failure_seconds=0.2)
         monitor = make_monitor(
             config,
@@ -162,31 +166,78 @@ class TestClassification:
                 FakeWsClient(True, time.time() - 3), FakeWsClient(False)
             ),
         )
-        assert (await monitor.snapshot()).overall == "healthy"
+        first = await monitor.snapshot()
+        assert first.overall == "degraded"
+        assert first.pending_critical_issues == ["linear_ws"]
         await asyncio.sleep(0.3)
         state = await monitor.snapshot()
         assert state.overall == "unhealthy"
-        assert "linear_ws" in state.critical_issues
+        assert state.critical_issues == ["linear_ws"]
+
+    async def test_short_rest_failure_is_degraded(self, tmp_path):
+        config = config_with(tmp_path, critical_health_failure_seconds=0.2)
+        monitor = make_monitor(config, discovery=FakeDiscovery(None))
+        first = await monitor.snapshot()
+        assert first.overall == "degraded"
+        assert first.pending_critical_issues == ["rest"]
+        await asyncio.sleep(0.3)
+        state = await monitor.snapshot()
+        assert state.overall == "unhealthy"
+        assert "rest" in state.critical_issues
 
     async def test_dispatcher_unhealthy_becomes_critical_after_grace(
         self, tmp_path
     ):
         config = config_with(tmp_path, critical_health_failure_seconds=0.2)
         monitor = make_monitor(config, dispatcher=FakeDispatcher(worker_healthy=False))
-        assert (await monitor.snapshot()).overall == "healthy"
+        assert (await monitor.snapshot()).overall == "degraded"
         await asyncio.sleep(0.3)
         state = await monitor.snapshot()
         assert state.overall == "unhealthy"
         assert "dispatcher" in state.critical_issues
 
-    async def test_rest_stale_becomes_unhealthy_after_grace(self, tmp_path):
+    async def test_persisted_spot_failure_becomes_unhealthy(self, tmp_path):
+        """Once the grace window passes, the same issue flips to critical."""
         config = config_with(tmp_path, critical_health_failure_seconds=0.2)
-        monitor = make_monitor(config, discovery=FakeDiscovery(None))
-        assert (await monitor.snapshot()).overall == "healthy"
+        monitor = make_monitor(
+            config,
+            ws_manager=FakeWsManager(
+                FakeWsClient(False), FakeWsClient(True, time.time() - 3)
+            ),
+        )
+        first = await monitor.snapshot()
+        assert first.overall == "degraded"
+        assert first.pending_critical_issues == ["spot_ws"]
         await asyncio.sleep(0.3)
+        second = await monitor.snapshot()
+        assert second.overall == "unhealthy"
+        assert second.critical_issues == ["spot_ws"]
+
+    async def test_recovery_returns_healthy_and_clears_pending_critical(
+        self, tmp_path
+    ):
+        config = config_with(tmp_path, critical_health_failure_seconds=0.2)
+        monitor = make_monitor(
+            config,
+            ws_manager=FakeWsManager(
+                FakeWsClient(False), FakeWsClient(True, time.time() - 3)
+            ),
+        )
+        first = await monitor.snapshot()
+        assert first.overall == "degraded"
+        assert first.pending_critical_issues == ["spot_ws"]
+        # The spot stream recovers; the next snapshot must be fully healthy.
+        now = time.time()
+        monitor = make_monitor(
+            config,
+            ws_manager=FakeWsManager(
+                FakeWsClient(True, now - 1), FakeWsClient(True, now - 3)
+            ),
+        )
         state = await monitor.snapshot()
-        assert state.overall == "unhealthy"
-        assert "rest" in state.critical_issues
+        assert state.overall == "healthy"
+        assert state.pending_critical_issues == []
+        assert state.critical_issues == []
 
     async def test_database_failure_is_immediately_unhealthy(self, tmp_path):
         config = config_with(tmp_path, critical_health_failure_seconds=180)
@@ -221,6 +272,8 @@ class TestPersistedSnapshot:
         assert snapshot["rest"] == "ok"
         assert snapshot["spot_ws"] == "ok"
         assert snapshot["linear_ws"] == "ok"
+        assert snapshot["pending_critical_issues"] == []
+        assert snapshot["degraded_issues"] == []
         assert abs(int(time.time()) - snapshot["last_updated_at"]) < 5
 
     async def test_unhealthy_overall_persisted(self, tmp_path, db):
@@ -308,6 +361,23 @@ class TestContainerHealthcheck:
         write_kv_db(
             db_path,
             healthy_payload(overall="degraded", spot_ws="fail"),
+        )
+        code, message = run_healthcheck(db_path)
+        assert code == 0, message
+
+    def test_degraded_container_healthcheck_still_exits_zero(self, tmp_path):
+        """Phase J5 - a grace-window failure persists pending_critical_issues
+        but must NOT restart the container."""
+        db_path = str(tmp_path / "degraded_j5.sqlite")
+        write_kv_db(
+            db_path,
+            healthy_payload(
+                overall="degraded",
+                spot_ws="fail",
+                critical_issues=[],
+                pending_critical_issues=["spot_ws"],
+                degraded_issues=["retry_queue"],
+            ),
         )
         code, message = run_healthcheck(db_path)
         assert code == 0, message
