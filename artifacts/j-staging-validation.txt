@@ -1,0 +1,39 @@
+﻿REST:
+  [PASS] spot discovery - count=555
+  [PASS] linear pagination drains - count=828
+  [PASS] settlement filtering - settle_coins=['USDC', 'USDT']
+  [PASS] linear USDT count - count=760
+  [PASS] linear USDC count - count=68
+  [PASS] linear PreLaunch discovery - count=4
+  [PASS] 1h derivative reference (prevPrice1h) - 832/832
+  [PASS] announcements fetched - count=50
+  [PASS] announcement nested type/tags
+WEBSOCKET:
+  [PASS] WS spot subscribe request emitted (req_id recorded)
+  [PASS] WS spot subscription ACK success (pending -> confirmed)
+  [PASS] WS spot dynamic subscribe request emitted (race-safe path)
+  [PASS] WS spot dynamic subscription ACK success (pending -> confirmed)
+  [PASS] WS spot ticker received - tickers=8 messages=8
+  [PASS] WS spot top-level ts
+  [PASS] WS spot dynamic subscription - BTCUSDT ticker arrived
+  [PASS] WS spot ticker freshness (last_ticker_at) - age=0s
+  [PASS] WS spot heartbeat freshness separate from ticker (last_any_message_at) - connection frames tracked independently of ticker stamps
+  [PASS] WS linear subscribe request emitted (req_id recorded)
+  [PASS] WS linear subscription ACK success (pending -> confirmed)
+  [PASS] WS linear dynamic subscribe request emitted (race-safe path)
+  [PASS] WS linear dynamic subscription ACK success (pending -> confirmed)
+  [PASS] WS linear ticker received - tickers=32 messages=32
+  [PASS] WS linear top-level ts
+  [PASS] WS linear dynamic subscription - BTCUSDT ticker arrived
+  [PASS] WS linear ticker freshness (last_ticker_at) - age=0s
+  [PASS] WS linear heartbeat freshness separate from ticker (last_any_message_at) - connection frames tracked independently of ticker stamps
+NEW-LISTING DRY-RUN:
+  [PASS] discovery refresh stable - instruments=1387
+  [PASS] no synthetic new events on refresh - new_events=0
+  [PASS] synthetic new market produced registry event - events=[('new', 'STAGE51928USDT')]
+  [PASS] synthetic new market produced listing event - events=[{'event_key': 'linear:STAGE51928USDT:trading', 'category': 'linear', 'symbol': 'STAGE51928USDT', 'event_type': 'trading', 'first_seen_at': 1787151928, 'telegram_sent': 0}]
+  [PASS] dispatcher delivered synthetic listing - count=1
+  [PASS] outbox listing row marked sent - status=sent
+  [PASS] listing telegram_sent = 1
+
+STAGING VALIDATION OK

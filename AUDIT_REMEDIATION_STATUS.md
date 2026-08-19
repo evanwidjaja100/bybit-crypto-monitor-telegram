@@ -124,6 +124,33 @@ with real Bybit subscription ACKs: `artifacts/staging-validation.txt`.
 H1–H3 changed runtime behavior, so the previously running F12 soak is
 invalid for final acceptance and must restart from zero.
 
+## Post-H-series reliability repair (J-series) phase log
+
+Branch `final-ws-reliability`. Baseline 347 tests (`artifacts/ws-reliability-baseline.txt`,
+commit `23821264`).
+
+| Phase | Status | Commit |
+|---|---|---|
+| J0 — freeze master baseline | COMPLETE | `23821264` |
+| J1 — eliminate WebSocket ACK registration race | COMPLETE | `2764ae9` |
+| J2 — enforce ACK timeout during continuous WebSocket traffic | COMPLETE | `d754938` |
+| J3 — separate WebSocket heartbeat and ticker freshness | COMPLETE | `6759c01` |
+| J4 — honor configured health heartbeat threshold | COMPLETE | `5e095c0` |
+| J5 — report grace-window critical failures as degraded | COMPLETE | `529d82a` |
+| J6 — sync soak and release documentation | COMPLETE | `6bcda13` |
+| J7 — refresh post-H-series validation evidence | COMPLETE | (J7 commit) |
+| J8 — final pre-Telegram reliability review | pending | |
+
+Current test count: 373 passed / 0 failed (5 consecutive identical runs,
+`artifacts/j-final-suite-run{1..5}.txt` + `j-final-suite-gate.txt`; 373 passed
+inside the final image `bybit-monitor:final-j`, `artifacts/j-docker-test-results.txt`).
+Live staging with real Bybit subscription ACKs, dynamic race-safe path, and
+freshness separation: `artifacts/j-staging-validation.txt`.
+
+J1–J7 changed runtime behavior (ACK registration race, ACK timeout watchdog,
+ticker-vs-heartbeat freshness), so the F12 soak remains invalid for final
+acceptance and must restart from zero after F10 passes.
+
 Per the production-ready decision rule (§19), `PRODUCTION READY: YES` requires
 real Telegram staging (F10) and a completed 24h soak restarted after H1–H5 —
 both still pending, so:

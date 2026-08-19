@@ -1,0 +1,14 @@
+FINAL SUITE GATE (J7) - 5 consecutive runs on the exact same commit
+====================================================================
+COMMIT:   6bcda13688e6ad1a9e62ceb5d4bbd4be8b34e81a (Phase J6 commit;
+          J7 adds no runtime code before this gate)
+BRANCH:   final-ws-reliability
+PYTHON:   Python 3.14.6
+WEBOSOCKETS: 17.0.1
+RUN 1:    373 passed in 87.91s (artifacts/j-final-suite-run1.txt)
+RUN 2:    373 passed in 83.15s (artifacts/j-final-suite-run2.txt)
+RUN 3:    373 passed in 83.76s (artifacts/j-final-suite-run3.txt)
+RUN 4:    373 passed in 90.43s (artifacts/j-final-suite-run4.txt)
+RUN 5:    373 passed in 90.44s (artifacts/j-final-suite-run5.txt)
+GATE:     PASS (5/5 consecutive green runs)
+UTC:      2026-08-19 03:14:00

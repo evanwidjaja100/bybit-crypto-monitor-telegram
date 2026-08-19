@@ -1,0 +1,18 @@
+Phase J0 - Freeze the Current Master Baseline
+
+BASE COMMIT: 238212649924ee332194ab014b5c512b21892320
+CURRENT BRANCH: final-ws-reliability
+CURRENT TEST COUNT: 347 passed / 0 failed
+PYTHON VERSION: Python 3.14.6
+DOCKER IMAGE ID: 92fc5de35353 (bybit-monitor:final, H-series baseline)
+GIT STATUS: clean (baseline commit includes bybit_post_h_series_reliability_plan.md)
+
+Credentials / data checks:
+  .env is NOT tracked (gitignored, only .env.example with placeholders tracked)
+  No Telegram credentials tracked (TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID empty in .env)
+  No runtime database committed (only data/.gitkeep tracked)
+
+Test command: python -m pytest tests -q
+Result: 347 passed in ~51s
+
+Baseline established before J1 begins.

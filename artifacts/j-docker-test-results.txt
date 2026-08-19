@@ -1,0 +1,14 @@
+DOCKER TEST RESULTS (J7)
+========================
+UTC TIMESTAMP: 2026-08-19 03:35:00
+COMMIT:        6bcda13 (Phase J6; J7 evidence phase adds scripts/docs only)
+BRANCH:        final-ws-reliability
+IMAGE:         bybit-monitor:final-j (no-cache build)
+IMAGE ID:      06c7ed7d0434
+PYTHON:        Python 3.14.7 (python:3.14-slim)
+WEBOSOCKETS:   17.0.1
+DEPENDENCIES:  requirements.txt (see artifacts/pip-freeze.txt for the
+               validated host lock; image installs the same requirements)
+TEST COUNT:    373 passed / 0 failed (suite run inside the image,
+               repo mounted at /app)
+RESULT:        PASS

@@ -7,7 +7,9 @@ Checks the real production API contracts:
 - Settlement filtering: only USDT/USDC linear instruments.
 - Linear PreLaunch discovery.
 - Spot + Linear WebSocket connections with top-level ``ts``.
-- Dynamic subscriptions after connect.
+- Dynamic subscriptions after connect (race-safe path: the extension
+  goes through the subscription lock, pending -> confirmed by ACK).
+- Ticker freshness tracked separately from connection heartbeat.
 - 1h derivative reference (``prevPrice1h``) on linear tickers.
 - Announcement nested ``type``/``tags`` structure.
 - Discovery refresh (two runs, stable universe, no duplicate new events).
@@ -168,6 +170,26 @@ async def ws_check(category: str, label: str, timeout: float = 30.0) -> None:
             any(m.get("symbol") == "BTCUSDT" for m in tickers),
             "BTCUSDT ticker arrived",
         )
+    # Phase J7: ticker freshness is its own field, separate from the
+    # connection heartbeat (pongs/ACKs never touch the ticker stamps).
+    ticker_fresh = (
+        client.last_ticker_at is not None
+        and time.time() - client.last_ticker_at < 60
+    )
+    check(
+        f"WS {label} ticker freshness (last_ticker_at)",
+        ticker_fresh,
+        f"age={-1 if client.last_ticker_at is None else time.time() - client.last_ticker_at:.0f}s",
+    )
+    heartbeat_fresh = (
+        client.last_any_message_at is not None
+        and time.time() - client.last_any_message_at < 60
+    )
+    check(
+        f"WS {label} heartbeat freshness separate from ticker (last_any_message_at)",
+        heartbeat_fresh,
+        "connection frames tracked independently of ticker stamps",
+    )
 
 
 async def _collect_ack_then_tickers(
@@ -182,6 +204,9 @@ async def _collect_ack_then_tickers(
     deadline = time.time() + timeout
     saw_request = False
     saw_ack = False
+    dynamic_started = False
+    saw_dynamic_request = False
+    saw_dynamic_ack = False
     while time.time() < deadline:
         subscribed = "BTCUSDT" in client._subscribed
         pending = "BTCUSDT" in client.pending_symbols
@@ -199,13 +224,53 @@ async def _collect_ack_then_tickers(
                     True,
                 )
                 saw_ack = True
-        if saw_ack and any(m.get("symbol") == "BTCUSDT" for m in messages):
-            return
+        if (
+            saw_ack
+            and not dynamic_started
+            and any(m.get("symbol") == "BTCUSDT" for m in messages)
+        ):
+            # Phase J7: extend the live subscription mid-stream through the
+            # race-safe path (subscription lock + pending -> confirmed ACK).
+            client.set_symbols({"BTCUSDT", "ETHUSDT"})
+            await client.resubscribe()
+            dynamic_started = True
+        if dynamic_started:
+            eth_subscribed = "ETHUSDT" in client._subscribed
+            eth_pending = "ETHUSDT" in client.pending_symbols
+            if client.pending_subscriptions or eth_subscribed:
+                if not saw_dynamic_request:
+                    check(
+                        f"WS {client.category} dynamic subscribe request emitted (race-safe path)",
+                        True,
+                    )
+                    saw_dynamic_request = True
+            if eth_subscribed and not eth_pending:
+                if not saw_dynamic_ack:
+                    check(
+                        f"WS {client.category} dynamic subscription ACK success (pending -> confirmed)",
+                        True,
+                    )
+                    saw_dynamic_ack = True
+            if (
+                saw_dynamic_ack
+                and any(m.get("symbol") == "ETHUSDT" for m in messages)
+            ):
+                return
         await asyncio.sleep(0.25)
     if not saw_request:
         check(f"WS {client.category} subscribe request emitted (req_id recorded)", False)
     if not saw_ack:
         check(f"WS {client.category} subscription ACK success (pending -> confirmed)", False)
+    if dynamic_started and not saw_dynamic_request:
+        check(
+            f"WS {client.category} dynamic subscribe request emitted (race-safe path)",
+            False,
+        )
+    if dynamic_started and not saw_dynamic_ack:
+        check(
+            f"WS {client.category} dynamic subscription ACK success (pending -> confirmed)",
+            False,
+        )
     raise asyncio.TimeoutError("no ACK-confirmed ticker received")
 
 
