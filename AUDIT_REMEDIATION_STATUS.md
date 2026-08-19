@@ -79,3 +79,113 @@ R11 operator tasks (blocked, need real Telegram credentials + .env):
 17.4 controlled Telegram outage, 17.5 container restart with pending outbox.
 
 Project status: **NOT PRODUCTION READY** until Phase R12 succeeds.
+
+## Production-readiness plan (F-series) phase log
+
+Branch `final-production-readiness`. 313 tests, 5 consecutive identical runs
+(`artifacts/final-suite-run{1..5}.txt`), plus clean-env acceptance run.
+
+| Phase | Status | Commit |
+|---|---|---|
+| F0 — baseline freeze | COMPLETE | `ac3def8` |
+| F1 — task-aware SQLite transaction ownership | COMPLETE | `980657f` |
+| F2 — strict raw momentum qualification | COMPLETE | `267f6b7` |
+| F3 — remove incomplete inverse feature exposure | COMPLETE | `7ba13ba` |
+| F4 — supervise dispatcher worker and health | COMPLETE | `a158674` |
+| F5 — correct hourly-only alert semantics | COMPLETE | `1141796` |
+| F6 — align Docker and validated Python runtime | COMPLETE | `1b3666b` |
+| F7 — complete Telegram health tracking | COMPLETE | `803cf83` |
+| F8 — final concurrency and recovery acceptance | COMPLETE | `bb2410d` |
+| F9 — live Bybit staging validation | COMPLETE | `32f6e67` |
+| F10 — real Telegram staging validation | BLOCKED (no real credentials) | |
+| F11 — final security audit | COMPLETE | `84261dd` |
+| F12 — final 24-hour soak | IN PROGRESS (started 2026-08-19 01:01:37 UTC, container `bybit-monitor-soak`, image `sha256:9cab41a5...`, see `SOAK.md`) | `dba8eef` |
+| F13 — production readiness acceptance | PARTIAL (clean-env 313 passed; migration v1→v3 validated, data preserved) | |
+
+Per the production-ready decision rule (§19), `PRODUCTION READY: YES` requires
+real Telegram staging and a completed 24h soak — both still pending, so:
+
+```
+STATUS: IN PROGRESS
+PRODUCTION READY: NO
+```
+
+## Final acceptance checklist (§18.3)
+
+### SQLite
+- [x] Task-aware transaction ownership (`test_database.py::TestTaskAwareTransactionOwnership`).
+- [x] Cross-task SQL blocks during transaction (chaos + ownership tests).
+- [x] Owner task reentrant SQL works.
+- [x] Exception rollback releases lock.
+- [x] Cancellation releases lock.
+- [x] No nested transaction race (`RuntimeError` nested guard + chaos tests).
+
+### Momentum
+- [x] No pre-qualification rounding (`MomentumEngine._raw_change`, Decimal arithmetic).
+- [x] Exactly 5.0 does not qualify (105 -> 100 vector).
+- [x] Any raw value >5.0 qualifies (105.000000001 vector).
+
+### Market support
+- [x] Spot supported (live: 555).
+- [x] Linear USDT supported (live: 756).
+- [x] Linear USDC supported (live: 68).
+- [x] PreLaunch discovery supported (live: 5).
+- [x] No false claim of inverse support (feature removed; SPEC.md documents it).
+
+### Alert semantics
+- [x] 0 = no range alert.
+- [x] 1 / 2 / 3 = active.
+- [x] 4+ = suppress.
+- [x] Debounce works.
+- [x] Hourly cannot bypass debounce.
+- [x] Hourly-only mode works (`TestHourlyOnlyMode`).
+- [x] Same-bucket duplicate suppressed.
+
+### Durable outbox
+- [x] State + outbox atomic (R3/F5).
+- [x] Crash recovery works (`test_listing_retry_survives_restart`, R10 chaos).
+- [x] Retry survives restart.
+- [x] 429 honored (`retry_after` handling + `TelegramRetryableError`).
+- [x] Listing ack tied to real delivery (dispatcher marks `telegram_sent` post-send).
+- [x] Dedupe keys prevent duplicate creation (unique partial index + exact vector test).
+
+### Dispatcher
+- [x] Worker supervised (F4 loop).
+- [x] Worker health visible (`worker_healthy`, health summary).
+- [x] Transient DB error does not kill delivery permanently (supervised loop + tests).
+
+### API
+- [x] Spot no pagination args (live F9).
+- [x] Linear pagination complete (live: 824 drained).
+- [x] `isPreListing` (live F9).
+- [x] Announcement nested type/tags (live F9).
+- [x] WS top-level `ts` (live F9).
+- [x] Settlement filters correct (live: USDT/USDC only).
+
+### Runtime
+- [x] Production Docker Python validated (3.14.7, 313 passed in container).
+- [x] Non-root container (`USER monitor`, uid 10001).
+- [x] Persistent `/data`.
+- [x] Healthcheck works (soak container `(healthy)`).
+- [x] Graceful shutdown (SIGTERM -> `shutdown_complete`, F6 lifecycle).
+
+### Security
+- [x] No secrets tracked.
+- [x] `.env` ignored.
+- [x] No credentials in logs/artifacts (F11 scan).
+- [x] Dependencies pinned/reproducible (`requirements.txt`, `artifacts/pip-freeze.txt`).
+
+### Staging
+- [x] Live Bybit validation passed (F9, 22/22 checks).
+- [ ] Real Telegram delivery passed — BLOCKED (no credentials).
+- [ ] Real Telegram retry/recovery passed — BLOCKED (no credentials).
+
+### Soak
+- [x] Final candidate unchanged during soak (image `sha256:9cab41a5...` = F8 code; F9/F11 added no runtime code).
+- [ ] >=24 elapsed hours — clock running since 2026-08-19 01:01:37 UTC.
+- [ ] All mandatory interventions completed — Telegram-dependent items pending F10.
+- [ ] Soak passed.
+
+### Migration validation (§18.2)
+- [x] Fresh DB -> all migrations -> app starts (F6 lifecycle + unit tests).
+- [x] Previous release candidate DB (migration v1, 11.8 MB, instruments/price_samples/listing_events/alert_state) -> migrations 1,2,3 applied -> all data preserved (instruments 1385, price_samples 555, listing_events 4, alert_state 1) -> app starts clean, `first_run=False events=0` (no false listing storm).
