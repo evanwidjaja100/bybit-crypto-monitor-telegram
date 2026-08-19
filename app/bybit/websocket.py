@@ -83,6 +83,11 @@ class BybitWebSocketClient:
         self._subscribed: set[str] = set()
         # Subscribe requests awaiting their ACK, keyed by req_id.
         self._pending_subscriptions: dict[str, PendingSubscription] = {}
+        # Serializes subscription synchronization operations (startup
+        # resubscribe + dynamic listing sync + internal resync) so overlapping
+        # batches for the same symbol cannot be created. ACK handling must NOT
+        # take this lock: it has to run concurrently with an in-flight sync.
+        self._subscription_lock = asyncio.Lock()
         self._sequence = 0
         self._connect_attempts = 0
         # Epoch wall-clock timestamp of the last received message (health).
@@ -249,22 +254,24 @@ class BybitWebSocketClient:
         """Subscribe to any desired symbols not yet confirmed or pending."""
         if self._ws is None:
             return
-        pending = self.pending_symbols
-        missing = sorted(
-            self._desired_symbols - self._subscribed - pending
-        )
-        if not missing:
-            return
-        await self._send_topic_ops(SUBSCRIBE_OP, missing)
+        async with self._subscription_lock:
+            pending = self.pending_symbols
+            missing = sorted(
+                self._desired_symbols - self._subscribed - pending
+            )
+            if not missing:
+                return
+            await self._send_topic_ops(SUBSCRIBE_OP, missing)
 
     async def unsubscribe(self, symbols: Iterable[str]) -> None:
         """Unsubscribe from symbols no longer desired (batched)."""
         if self._ws is None:
             return
-        stale = sorted(set(symbols) & self._subscribed)
-        if not stale:
-            return
-        await self._send_topic_ops("unsubscribe", stale)
+        async with self._subscription_lock:
+            stale = sorted(set(symbols) & self._subscribed)
+            if not stale:
+                return
+            await self._send_topic_ops("unsubscribe", stale)
 
     async def _send_topic_ops(self, op: str, symbols: Iterable[str]) -> None:
         symbol_list = list(symbols)
@@ -274,20 +281,26 @@ class BybitWebSocketClient:
             topics = [f"tickers.{symbol}" for symbol in batch]
             if op == SUBSCRIBE_OP:
                 # Every subscribe request carries a unique req_id so the
-                # ACK can be correlated to this exact batch. The batch is
-                # stored as PENDING: confirmation happens only in
-                # `_handle_subscribe_ack`.
+                # ACK can be correlated to this exact batch. The pending row
+                # is registered BEFORE the frame becomes observable to the
+                # network: an ACK can never beat the registration. A failed
+                # send rolls the pending row back so no false pending state
+                # survives.
                 self._sequence += 1
                 req_id = f"sub-{self.category}-{self._sequence}"
-                await self._ws.send(
-                    json.dumps({"req_id": req_id, "op": op, "args": topics})
-                )
                 self._pending_subscriptions[req_id] = PendingSubscription(
                     req_id=req_id,
                     symbols=tuple(batch),
                     topics=tuple(topics),
                     sent_at=time.monotonic(),
                 )
+                try:
+                    await self._ws.send(
+                        json.dumps({"req_id": req_id, "op": op, "args": topics})
+                    )
+                except Exception:
+                    self._pending_subscriptions.pop(req_id, None)
+                    raise
             else:
                 await self._ws.send(json.dumps({"op": op, "args": topics}))
                 self._subscribed.difference_update(batch)
