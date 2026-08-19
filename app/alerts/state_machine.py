@@ -182,9 +182,6 @@ class AlertStateMachine:
         """Persist the state returned by :meth:`evaluate` without committing."""
         await self.repo.save_no_commit(**self._state_fields(state))
 
-    async def _save(self, state: dict[str, Any]) -> None:
-        await self.repo.save(**self._state_fields(state))
-
     def _maybe_composition_update(
         self, decision: AlertDecision, state: dict[str, Any], now: int
     ) -> None:

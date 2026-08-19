@@ -9,6 +9,13 @@ drops, and Telegram failures.
 
 > Monitoring and notification only. No trading. No account data.
 
+**Release status: release candidate.** Core automated validation is
+complete. Real Telegram staging and the final 24-hour soak remain
+mandatory before production readiness.
+
+**Market support:** Spot, Linear USDT, Linear USDC. Unsupported in this
+release: Inverse, Options.
+
 ---
 
 ## Quick start (local)
@@ -63,7 +70,17 @@ docker compose logs -f bybit-monitor
   container; configure Telegram via `docker-compose.yml` environment or a
   host `.env` file (Docker Compose reads `.env` automatically).
 
-Healthcheck probes the process every 30 s after a 10 s start period.
+Container health reflects critical application health, not merely SQLite
+freshness. The application persists a compact health snapshot (database,
+dispatcher, REST discovery, Spot/Linear WebSocket freshness) every 30 s;
+`scripts/container_healthcheck.py` (HEALTHCHECK `--interval=60s
+--timeout=10s --start-period=30s --retries=3`) exits non-zero when the
+heartbeat is stale or a critical subsystem failure has persisted beyond
+its 180 s grace period. Temporary Telegram failures and short reconnects
+are degraded, not unhealthy.
+
+Note: `HEALTHCHECK` only exposes health status. The restart policy acts
+on process exit; an operator/orchestrator can act on the unhealthy state.
 
 ---
 
@@ -83,6 +100,7 @@ full list and the `SPEC.md` for the specification. Key variables:
 | `ALERT_DEBOUNCE_SECONDS` | `20` | transition debounce |
 | `ENABLE_SPOT` / `ENABLE_LINEAR_USDT` / `ENABLE_LINEAR_USDC` | `true` | market universe |
 | `DATABASE_PATH` | `./data/bybit_monitor.sqlite` | SQLite location |
+| `WS_SUBSCRIPTION_ACK_TIMEOUT_SECONDS` | `10` | subscribe ACK timeout before reconnect |
 | `LOG_LEVEL` | `INFO` | logging verbosity |
 
 Secrets never have hard-coded defaults and are redacted from logs.
@@ -116,7 +134,13 @@ data/                  local SQLite store (gitignored)
 ## Architecture notes
 
 1. REST is the source of truth for discovery and reconciliation.
-2. WebSocket is the final primary source of live prices.
+2. WebSocket is the final primary source of live prices. Subscription
+   requests are tracked as **pending** with a unique `req_id`; topics
+   become **confirmed** only after a successful Bybit ACK for that exact
+   `req_id`. Failed or timed-out ACKs trigger a reconnect that rebuilds
+   the desired universe, so a topic is never silently reported as
+   monitored when the server never accepted it. A dead socket is always
+   reported disconnected (cleanup runs on every exit path).
 3. Alert decisions are based *only* on unique `baseCoin` counts.
 4. Telegram delivery is decoupled via a durable SQLite outbox: a
    notification is persisted atomically with the alert state, then a
