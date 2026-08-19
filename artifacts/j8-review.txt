@@ -1,0 +1,32 @@
+PHASE J8 - FINAL PRE-TELEGRAM RELIABILITY REVIEW
+================================================
+COMMIT:  ccdb562 (J7) - review performed on final J-series code
+DATE:    2026-08-19
+
+12.1 Subscription state
+  [OK] pending registered before send           (websocket.py: pending dict insert precedes ws.send)
+  [OK] ACK cannot beat pending registration     (registration is synchronous before the frame is observable)
+  [OK] failed send removes pending              (except branch pops req_id)
+  [OK] failed ACK never confirms                (only success=true updates _subscribed; failure raises SubscriptionAckError)
+  [OK] timeout independent of receive silence   (J2: _fail_unacked_subscriptions after every frame AND on recv timeout)
+  [OK] reconnect preserves desired              (_desired_symbols assigned only in __init__ and set_symbols)
+  [OK] reconnect clears pending/confirmed       (_connect_and_listen resets both on connect)
+
+12.2 Freshness state
+  [OK] pong != ticker                            (pong -> _note_any_message only)
+  [OK] ACK != ticker                             (ACK -> _note_any_message only)
+  [OK] ticker updates ticker freshness           (_handle_raw: is_ticker -> _note_ticker)
+  [OK] health reads ticker freshness             (monitor.py reads last_ticker_at for spot and linear)
+  [OK] ticker stale detection uses ticker timestamp (_ticker_age() / _ticker_stale(), never any-message)
+
+12.3 Health
+  [OK] healthy   = no current issue              (no bad, no degraded)
+  [OK] degraded  = current issue inside grace    (bad or degraded -> degraded)
+  [OK] unhealthy = persisted critical or DB failure (database or persisted list -> unhealthy)
+
+12.4 Documentation
+  [OK] old soak invalidated                      (SOAK.md STATUS: INVALIDATED, historical only, not valid for final release)
+  [OK] README links valid                        (no reference to the nonexistent master plan file)
+  [OK] production ready remains NO               (AUDIT_REMEDIATION_STATUS.md PRODUCTION READY: NO)
+
+RESULT: no unresolved P0/P1 issue remains before real Telegram staging (F10).
