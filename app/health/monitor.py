@@ -127,13 +127,13 @@ class HealthMonitor:
             linear = getattr(self.ws_manager, "clients", {}).get("linear")
             if spot is not None:
                 state.spot_ws_connected = bool(getattr(spot, "connected", False))
-                state.last_spot_ticker_age = _age(now, getattr(spot, "last_message_at", None))
+                state.last_spot_ticker_age = _age(now, getattr(spot, "last_ticker_at", None))
                 if not state.spot_ws_connected:
                     state.notes.append("spot ws disconnected")
             if linear is not None:
                 state.linear_ws_connected = bool(getattr(linear, "connected", False))
                 state.last_linear_ticker_age = _age(
-                    now, getattr(linear, "last_message_at", None)
+                    now, getattr(linear, "last_ticker_at", None)
                 )
                 if not state.linear_ws_connected:
                     state.notes.append("linear ws disconnected")

@@ -14,8 +14,14 @@ from tests.conftest import make_settings
 
 
 class FakeWsClient:
-    def __init__(self, connected: bool, last_message_at: float = 0.0) -> None:
+    def __init__(
+        self,
+        connected: bool,
+        last_ticker_at: float | None = 0.0,
+        last_message_at: float | None = None,
+    ) -> None:
         self.connected = connected
+        self.last_ticker_at = last_ticker_at
         self.last_message_at = last_message_at
 
 
@@ -71,8 +77,8 @@ def build_components(**overrides) -> dict:
     defaults = dict(
         discovery=FakeDiscovery(now - 10),
         ws_manager=FakeWsManager(
-            FakeWsClient(True, time.monotonic() - 5),
-            FakeWsClient(True, time.monotonic() - 3),
+            FakeWsClient(True, time.time() - 5),
+            FakeWsClient(True, time.time() - 3),
         ),
         telegram=FakeTelegram(last_success_at=now - 60),
         dispatcher=FakeDispatcher(asyncio.Queue()),
@@ -189,6 +195,26 @@ class TestSnapshot:
         assert state.telegram_last_error_age == 31
         text = HealthMonitor.format_summary(state)
         assert "Telegram: unhealthy (last failure: 31s ago http_429)" in text
+
+    async def test_health_reports_ticker_age_from_ticker_timestamp_only(
+        self, config
+    ):
+        """Phase J3 - connection traffic (pongs) must never masquerade as
+        ticker freshness in health reporting."""
+        now = int(time.time())
+        monitor = make_monitor(
+            config,
+            ws_manager=FakeWsManager(
+                FakeWsClient(
+                    True, last_ticker_at=None, last_message_at=now - 2
+                ),
+                FakeWsClient(True, last_ticker_at=now - 3),
+            ),
+        )
+        state = await monitor.snapshot(now=now)
+        # Fresh pong traffic exists, but no ticker ever arrived.
+        assert state.last_spot_ticker_age is None
+        assert state.last_linear_ticker_age == 3
 
 
 class TestSummary:

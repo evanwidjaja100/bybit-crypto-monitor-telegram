@@ -704,9 +704,9 @@ class TestP14DiscoveryTimestamp:
 # ----------------------------------------------------------------------
 
 class FakeWsClient:
-    def __init__(self, connected: bool, last_message_at: float = 0.0) -> None:
+    def __init__(self, connected: bool, last_ticker_at: float | None = 0.0) -> None:
         self.connected = connected
-        self.last_message_at = last_message_at
+        self.last_ticker_at = last_ticker_at
 
 
 class FakeWsManager:
@@ -727,11 +727,15 @@ class TestP15ClockSeparation:
             }
         )
         client._handle_raw(raw)
-        # `last_message_at` must be epoch wall-clock (health uses it).
-        assert client.last_message_at is not None
-        assert abs(client.last_message_at - time.time()) < 10
-        # The stale watchdog keeps its own monotonic timestamp.
-        assert abs(client.last_message_monotonic - time.monotonic()) < 10
+        # Ticker freshness must be epoch wall-clock (health uses it).
+        assert client.last_ticker_at is not None
+        assert abs(client.last_ticker_at - time.time()) < 10
+        # Connection freshness is tracked too (separate from tickers).
+        assert client.last_any_message_at is not None
+        assert abs(client.last_any_message_at - time.time()) < 10
+        # The stale watchdog keeps its own monotonic timestamps.
+        assert abs(client.last_ticker_monotonic - time.monotonic()) < 10
+        assert abs(client.last_any_message_monotonic - time.monotonic()) < 10
 
     async def test_health_does_not_mix_monotonic_and_epoch_time(self, config):
         now = int(time.time())

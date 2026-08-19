@@ -3,9 +3,9 @@
 Separate connections are maintained for Spot and Linear. Ticker topics
 are generated from the instrument registry and (re)subscribed in batches
 within Bybit's limits. Reconnects use bounded exponential backoff, and a
-stale-stream watchdog triggers reconnect + REST reconciliation so the
-REST feed remains the fallback and discovery/recovery logic is never
-replaced.
+stale-ticker watchdog (separate from heartbeat freshness) triggers
+reconnect + REST reconciliation so the REST feed remains the fallback
+and discovery/recovery logic is never replaced.
 
 Delta handling: partial ``delta`` updates merge into the existing ticker
 snapshot; they never replace it.
@@ -90,10 +90,16 @@ class BybitWebSocketClient:
         self._subscription_lock = asyncio.Lock()
         self._sequence = 0
         self._connect_attempts = 0
-        # Epoch wall-clock timestamp of the last received message (health).
-        self._last_message_at = 0.0
-        # Monotonic timestamp of the last received message (stale watchdog).
-        self._last_message_monotonic = 0.0
+        # Epoch wall-clock of the last received frame of any kind (health).
+        self._last_any_message_at: float | None = None
+        # Monotonic timestamp of the last received frame (heartbeat).
+        self._last_any_message_monotonic: float | None = None
+        # Epoch wall-clock of the last received ticker (market health).
+        self._last_ticker_at: float | None = None
+        # Monotonic timestamp of the last ticker (ticker stale watchdog).
+        self._last_ticker_monotonic: float | None = None
+        # Monotonic timestamp of the current connection establishment.
+        self._connected_monotonic = 0.0
         self._last_ping_at = 0.0
         self.connected = False
         self._ws: Any = None
@@ -103,14 +109,27 @@ class BybitWebSocketClient:
         return f"{self.config.bybit_ws_base_url}/{self.category}"
 
     @property
-    def last_message_at(self) -> float:
-        """Epoch timestamp of the last received message (0 = never)."""
-        return self._last_message_at
+    def last_any_message_at(self) -> float | None:
+        """Epoch timestamp of the last frame of any kind (None = never)."""
+        return self._last_any_message_at
 
     @property
-    def last_message_monotonic(self) -> float:
-        """Monotonic timestamp of the last received message (0 = never)."""
-        return self._last_message_monotonic
+    def last_any_message_monotonic(self) -> float | None:
+        """Monotonic timestamp of the last frame of any kind (None = never)."""
+        return self._last_any_message_monotonic
+
+    @property
+    def last_ticker_at(self) -> float | None:
+        """Epoch timestamp of the last ticker frame (None = never).
+
+        Only ticker frames update this; pongs and ACKs never do.
+        """
+        return self._last_ticker_at
+
+    @property
+    def last_ticker_monotonic(self) -> float | None:
+        """Monotonic timestamp of the last ticker frame (None = never)."""
+        return self._last_ticker_monotonic
 
     @property
     def pending_symbols(self) -> set[str]:
@@ -176,8 +195,13 @@ class BybitWebSocketClient:
                 # desired set is preserved and rebuilt by resubscribe below.
                 self._subscribed = set()
                 self._pending_subscriptions = {}
-                self._last_message_at = time.time()
-                self._last_message_monotonic = time.monotonic()
+                # A fresh connection has heartbeat freshness from now on,
+                # but NO ticker freshness until the first ticker arrives.
+                self._last_any_message_at = time.time()
+                self._last_any_message_monotonic = time.monotonic()
+                self._last_ticker_at = None
+                self._last_ticker_monotonic = None
+                self._connected_monotonic = time.monotonic()
                 self._last_ping_at = time.monotonic()
                 self._set_status(True)
                 logger.info("event=ws_connected stream=%s", self.category)
@@ -190,14 +214,7 @@ class BybitWebSocketClient:
                     except asyncio.TimeoutError:
                         if self._fail_unacked_subscriptions():
                             return
-                        if self._desired_symbols and (
-                            time.monotonic() - self._last_message_monotonic
-                            > self.config.ws_stale_seconds
-                        ):
-                            logger.warning(
-                                "event=ws_stale stream=%s", self.category
-                            )
-                            self._set_status(False, reason="stale")
+                        if self._ticker_stale():
                             return
                         if (
                             time.monotonic() - self._last_ping_at
@@ -209,6 +226,8 @@ class BybitWebSocketClient:
                     try:
                         self._handle_raw(raw)
                         if self._fail_unacked_subscriptions():
+                            return
+                        if self._ticker_stale():
                             return
                     except SubscriptionAckError as exc:
                         logger.warning(
@@ -334,18 +353,20 @@ class BybitWebSocketClient:
     # ------------------------------------------------------------------
     def _handle_raw(self, raw: str) -> None:
         data = json.loads(raw)
+        topic = data.get("topic") or ""
+        is_ticker = topic.startswith("tickers.")
+        # Every valid frame refreshes connection heartbeat freshness;
+        # only ticker frames refresh market ticker freshness.
+        self._note_any_message()
+        if is_ticker:
+            self._note_ticker()
         if data.get("op") == SUBSCRIBE_OP:
             self._handle_subscribe_ack(data)
             return
         if data.get("op") == "pong":
-            self._last_message_at = time.time()
-            self._last_message_monotonic = time.monotonic()
             return
-        topic = data.get("topic") or ""
-        if topic.startswith("tickers."):
+        if is_ticker:
             symbol = topic[len("tickers.") :]
-            self._last_message_at = time.time()
-            self._last_message_monotonic = time.monotonic()
             self.on_message(
                 {
                     "category": self.category,
@@ -355,6 +376,35 @@ class BybitWebSocketClient:
                     "data": data.get("data") or {},
                 }
             )
+
+    def _note_any_message(self) -> None:
+        self._last_any_message_at = time.time()
+        self._last_any_message_monotonic = time.monotonic()
+
+    def _note_ticker(self) -> None:
+        self._last_ticker_at = time.time()
+        self._last_ticker_monotonic = time.monotonic()
+
+    def _ticker_age(self) -> float:
+        """Seconds since the last ticker (or since connect if none yet)."""
+        if self._last_ticker_monotonic is not None:
+            return time.monotonic() - self._last_ticker_monotonic
+        return time.monotonic() - self._connected_monotonic
+
+    def _ticker_stale(self) -> bool:
+        """Flag the connection unhealthy when no ticker arrived in time.
+
+        Called after every received frame AND after every receive timeout
+        so continuous pong traffic can never suppress ticker staleness.
+        Returns True when the connection must be torn down for recovery.
+        """
+        if not self._desired_symbols:
+            return False
+        if self._ticker_age() <= self.config.ws_stale_seconds:
+            return False
+        logger.warning("event=ws_stale stream=%s", self.category)
+        self._set_status(False, reason="stale")
+        return True
 
     def _handle_subscribe_ack(self, data: dict[str, Any]) -> None:
         """Resolve one pending subscribe request from its ACK.

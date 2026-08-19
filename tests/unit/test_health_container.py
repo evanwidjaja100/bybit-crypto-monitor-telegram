@@ -25,8 +25,14 @@ HEALTHCHECK = ROOT / "scripts" / "container_healthcheck.py"
 
 
 class FakeWsClient:
-    def __init__(self, connected: bool, last_message_at: float = 0.0) -> None:
+    def __init__(
+        self,
+        connected: bool,
+        last_ticker_at: float | None = 0.0,
+        last_message_at: float | None = None,
+    ) -> None:
         self.connected = connected
+        self.last_ticker_at = last_ticker_at
         self.last_message_at = last_message_at
 
 
