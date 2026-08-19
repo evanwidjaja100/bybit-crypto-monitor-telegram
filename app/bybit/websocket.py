@@ -188,21 +188,8 @@ class BybitWebSocketClient:
                     try:
                         raw = await asyncio.wait_for(ws.recv(), timeout=0.5)
                     except asyncio.TimeoutError:
-                        if self._pending_subscriptions:
-                            expired = [
-                                pending
-                                for pending in self._pending_subscriptions.values()
-                                if time.monotonic() - pending.sent_at
-                                > self.config.ws_subscription_ack_timeout_seconds
-                            ]
-                            if expired:
-                                logger.warning(
-                                    "event=ws_subscription_ack_timeout stream=%s req_ids=%s",
-                                    self.category,
-                                    ",".join(p.req_id for p in expired),
-                                )
-                                self._set_status(False, reason="subscribe_ack_timeout")
-                                return
+                        if self._fail_unacked_subscriptions():
+                            return
                         if self._desired_symbols and (
                             time.monotonic() - self._last_message_monotonic
                             > self.config.ws_stale_seconds
@@ -221,6 +208,8 @@ class BybitWebSocketClient:
                         continue
                     try:
                         self._handle_raw(raw)
+                        if self._fail_unacked_subscriptions():
+                            return
                     except SubscriptionAckError as exc:
                         logger.warning(
                             "event=ws_subscribe_rejected stream=%s error=%s",
@@ -246,6 +235,38 @@ class BybitWebSocketClient:
             self.connected = connected
             if self.on_status is not None:
                 self.on_status(connected, reason)
+
+    def _expired_pending_subscriptions(
+        self, now_monotonic: float | None = None
+    ) -> list[PendingSubscription]:
+        """Pending subscribe requests whose ACK window has passed."""
+        now = (
+            now_monotonic if now_monotonic is not None else time.monotonic()
+        )
+        return [
+            pending
+            for pending in self._pending_subscriptions.values()
+            if now - pending.sent_at
+            > self.config.ws_subscription_ack_timeout_seconds
+        ]
+
+    def _fail_unacked_subscriptions(self) -> bool:
+        """Log and flag the connection unhealthy when an ACK timed out.
+
+        Called after every received frame AND after every receive timeout
+        so continuous market traffic can never suppress the watchdog.
+        Returns True when the connection must be torn down for recovery.
+        """
+        expired = self._expired_pending_subscriptions()
+        if not expired:
+            return False
+        logger.warning(
+            "event=ws_subscription_ack_timeout stream=%s req_ids=%s",
+            self.category,
+            ",".join(p.req_id for p in expired),
+        )
+        self._set_status(False, reason="subscribe_ack_timeout")
+        return True
 
     # ------------------------------------------------------------------
     # Subscription management
