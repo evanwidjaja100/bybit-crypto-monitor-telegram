@@ -67,6 +67,163 @@ def subscribe_ack(req_id: str, success: bool, ret_msg: str = "") -> str:
     )
 
 
+class TestDisconnectCleanup:
+    """Phase H2 - a dead WebSocket must never remain reported as connected."""
+
+    @staticmethod
+    async def _drop_after_message(websocket) -> None:
+        """Send one ticker, hold the connection, then drop it."""
+        try:
+            await websocket.send(ticker_payload("BTCUSDT"))
+            await asyncio.sleep(0.5)
+            await websocket.close()
+        except Exception:
+            pass
+
+    async def test_recv_exception_sets_connected_false_immediately(self, tmp_path):
+        async def handler(websocket):
+            await self._drop_after_message(websocket)
+
+        async with serve(handler, "127.0.0.1", 0) as server:
+            port = server.sockets[0].getsockname()[1]
+            cfg = ws_config(tmp_path, port, ws_subscription_ack_timeout_seconds=30)
+            client = BybitWebSocketClient(
+                "spot", cfg, on_message=lambda payload: None
+            )
+            client.set_symbols(["BTCUSDT"])
+            stop = asyncio.Event()
+            task = asyncio.create_task(client.run(stop))
+            assert await wait_until(lambda: client.connected is True)
+            # Server drops the socket: recv raises; the client must flip to
+            # disconnected immediately (before the next reconnect attempt).
+            assert await wait_until(lambda: client.connected is False)
+            assert client._ws is None
+
+    async def test_connection_context_exception_sets_connected_false(
+        self, tmp_path
+    ):
+        """Connect refusal still runs the finally cleanup."""
+        cfg = ws_config(tmp_path, port=1)  # nothing listens there
+        client = BybitWebSocketClient("spot", cfg, on_message=lambda payload: None)
+        stop = asyncio.Event()
+        task = asyncio.create_task(client.run(stop))
+        await asyncio.sleep(0.5)
+        assert client.connected is False
+        assert client._ws is None
+        stop.set()
+        await task
+
+    async def test_cancelled_ws_task_sets_connected_false(self, tmp_path):
+        async def handler(websocket):
+            try:
+                async for _message in websocket:
+                    pass
+            except Exception:
+                pass
+
+        async with serve(handler, "127.0.0.1", 0) as server:
+            port = server.sockets[0].getsockname()[1]
+            cfg = ws_config(tmp_path, port)
+            client = BybitWebSocketClient(
+                "spot", cfg, on_message=lambda payload: None
+            )
+            client.set_symbols(["BTCUSDT"])
+            stop = asyncio.Event()
+            task = asyncio.create_task(client.run(stop))
+            assert await wait_until(lambda: client.connected is True)
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+            assert client.connected is False
+            assert client._ws is None
+
+    async def test_ws_reference_cleared_after_disconnect(self, tmp_path):
+        """_ws must be cleared on the exception path too."""
+        async def handler(websocket):
+            try:
+                await websocket.close()
+            except Exception:
+                pass
+
+        async with serve(handler, "127.0.0.1", 0) as server:
+            port = server.sockets[0].getsockname()[1]
+            cfg = ws_config(tmp_path, port)
+            client = BybitWebSocketClient(
+                "spot", cfg, on_message=lambda payload: None
+            )
+            stop = asyncio.Event()
+            task = asyncio.create_task(client.run(stop))
+            assert await wait_until(lambda: client.connected is False)
+            assert client._ws is None
+            stop.set()
+            await task
+
+    async def test_disconnect_status_callback_is_emitted(self, tmp_path):
+        transitions: list[tuple[bool, str]] = []
+
+        def on_status(connected: bool, reason: str) -> None:
+            transitions.append((connected, reason))
+
+        async def handler(websocket):
+            await self._drop_after_message(websocket)
+
+        async with serve(handler, "127.0.0.1", 0) as server:
+            port = server.sockets[0].getsockname()[1]
+            cfg = ws_config(tmp_path, port)
+            client = BybitWebSocketClient(
+                "spot", cfg, on_message=lambda payload: None, on_status=on_status
+            )
+            client.set_symbols(["BTCUSDT"])
+            stop = asyncio.Event()
+            task = asyncio.create_task(client.run(stop))
+            assert await wait_until(lambda: any(conn is True for conn, _ in transitions))
+            assert await wait_until(
+                lambda: any(conn is False for conn, _ in transitions)
+            )
+            # No duplicate disconnect notification: state already false.
+            assert sum(1 for conn, _ in transitions if conn is False) == 1
+            stop.set()
+            await task
+
+    async def test_reconnect_delay_health_sees_disconnected_not_connected(
+        self, tmp_path
+    ):
+        """Critical timing test: during the backoff before the next
+        reconnect attempt, health must see disconnected, never connected."""
+        async def handler(websocket):
+            await self._drop_after_message(websocket)
+
+        async with serve(handler, "127.0.0.1", 0) as server:
+            port = server.sockets[0].getsockname()[1]
+            cfg = ws_config(tmp_path, port, ws_subscription_ack_timeout_seconds=30)
+            client = BybitWebSocketClient(
+                "spot", cfg, on_message=lambda payload: None
+            )
+            client.set_symbols(["BTCUSDT"])
+            stop = asyncio.Event()
+            task = asyncio.create_task(client.run(stop))
+            assert await wait_until(lambda: client.connected is True)
+            assert await wait_until(lambda: client.connected is False)
+            assert client._ws is None
+# The reconnect backoff is 2s: the disconnected state must hold.
+            await asyncio.sleep(0.5)
+            assert client.connected is False
+            assert client._ws is None
+            stop.set()
+            await task
+
+
+def ticker_payload(symbol: str) -> str:
+    return json.dumps(
+        {
+            "topic": f"tickers.{symbol}",
+            "type": "snapshot",
+            "ts": 1787015820000,
+            "data": {"symbol": symbol, "lastPrice": "100"},
+        }
+    )
+
+
 class TestPendingState:
     async def test_subscribe_send_does_not_mark_symbols_confirmed(self, tmp_path):
         client = make_client(tmp_path)

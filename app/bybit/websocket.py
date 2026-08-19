@@ -161,80 +161,86 @@ class BybitWebSocketClient:
     async def _connect_and_listen(self, stop_event: asyncio.Event) -> None:
         self._connect_attempts += 1
         self._set_status(False)
-        async with ws_connect(
-            self.url, ping_interval=None, close_timeout=5.0
-        ) as ws:
-            self._connect_attempts = 0
-            self.connected = True
-            self._ws = ws
-            # Reconnect semantics: confirmed + pending are cleared; the
-            # desired set is preserved and rebuilt by resubscribe below.
-            self._subscribed = set()
-            self._pending_subscriptions = {}
-            self._last_message_at = time.time()
-            self._last_message_monotonic = time.monotonic()
-            self._last_ping_at = time.monotonic()
-            self._set_status(True)
-            logger.info("event=ws_connected stream=%s", self.category)
-            await self.resubscribe()
-            if self.on_connected is not None:
-                await _maybe_await(self.on_connected())
-            while not stop_event.is_set():
-                try:
-                    raw = await asyncio.wait_for(ws.recv(), timeout=0.5)
-                except asyncio.TimeoutError:
-                    if self._pending_subscriptions:
-                        expired = [
-                            pending
-                            for pending in self._pending_subscriptions.values()
-                            if time.monotonic() - pending.sent_at
-                            > self.config.ws_subscription_ack_timeout_seconds
-                        ]
-                        if expired:
+        try:
+            async with ws_connect(
+                self.url, ping_interval=None, close_timeout=5.0
+            ) as ws:
+                self._connect_attempts = 0
+                self._ws = ws
+                # Reconnect semantics: confirmed + pending are cleared; the
+                # desired set is preserved and rebuilt by resubscribe below.
+                self._subscribed = set()
+                self._pending_subscriptions = {}
+                self._last_message_at = time.time()
+                self._last_message_monotonic = time.monotonic()
+                self._last_ping_at = time.monotonic()
+                self._set_status(True)
+                logger.info("event=ws_connected stream=%s", self.category)
+                await self.resubscribe()
+                if self.on_connected is not None:
+                    await _maybe_await(self.on_connected())
+                while not stop_event.is_set():
+                    try:
+                        raw = await asyncio.wait_for(ws.recv(), timeout=0.5)
+                    except asyncio.TimeoutError:
+                        if self._pending_subscriptions:
+                            expired = [
+                                pending
+                                for pending in self._pending_subscriptions.values()
+                                if time.monotonic() - pending.sent_at
+                                > self.config.ws_subscription_ack_timeout_seconds
+                            ]
+                            if expired:
+                                logger.warning(
+                                    "event=ws_subscription_ack_timeout stream=%s req_ids=%s",
+                                    self.category,
+                                    ",".join(p.req_id for p in expired),
+                                )
+                                self._set_status(False, reason="subscribe_ack_timeout")
+                                return
+                        if self._desired_symbols and (
+                            time.monotonic() - self._last_message_monotonic
+                            > self.config.ws_stale_seconds
+                        ):
                             logger.warning(
-                                "event=ws_subscription_ack_timeout stream=%s req_ids=%s",
-                                self.category,
-                                ",".join(p.req_id for p in expired),
+                                "event=ws_stale stream=%s", self.category
                             )
-                            self._set_status(False, reason="subscribe_ack_timeout")
+                            self._set_status(False, reason="stale")
                             return
-                    if self._desired_symbols and (
-                        time.monotonic() - self._last_message_monotonic
-                        > self.config.ws_stale_seconds
-                    ):
+                        if (
+                            time.monotonic() - self._last_ping_at
+                            >= self.config.ws_heartbeat_interval_seconds
+                        ):
+                            await ws.send(json.dumps(PING_OP))
+                            self._last_ping_at = time.monotonic()
+                        continue
+                    try:
+                        self._handle_raw(raw)
+                    except SubscriptionAckError as exc:
                         logger.warning(
-                            "event=ws_stale stream=%s", self.category
+                            "event=ws_subscribe_rejected stream=%s error=%s",
+                            self.category,
+                            exc,
                         )
-                        self._set_status(False, reason="stale")
+                        self._set_status(False, reason="subscribe_ack_failed")
                         return
-                    if (
-                        time.monotonic() - self._last_ping_at
-                        >= self.config.ws_heartbeat_interval_seconds
-                    ):
-                        await ws.send(json.dumps(PING_OP))
-                        self._last_ping_at = time.monotonic()
-                    continue
-                try:
-                    self._handle_raw(raw)
-                except SubscriptionAckError as exc:
-                    logger.warning(
-                        "event=ws_subscribe_rejected stream=%s error=%s",
-                        self.category,
-                        exc,
-                    )
-                    self._set_status(False, reason="subscribe_ack_failed")
-                    return
-                except Exception:
-                    logger.exception(
-                        "event=ws_message_error stream=%s", self.category
-                    )
-            self.connected = False
+                    except Exception:
+                        logger.exception(
+                            "event=ws_message_error stream=%s", self.category
+                        )
+        finally:
+            # Guaranteed cleanup on every exit path: normal close, network
+            # error, protocol error, recv exception, cancellation, and any
+            # unexpected exception. A dead socket is never reported as
+            # connected, and cancellation keeps propagating.
             self._ws = None
+            self._set_status(False, reason="disconnected")
 
     def _set_status(self, connected: bool, reason: str = "") -> None:
-        self.connected = connected
-        if self.on_status is not None:
-            self.on_status(connected, reason)
+        if self.connected != connected:
+            self.connected = connected
+            if self.on_status is not None:
+                self.on_status(connected, reason)
 
     # ------------------------------------------------------------------
     # Subscription management
