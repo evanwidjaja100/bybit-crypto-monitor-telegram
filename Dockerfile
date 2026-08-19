@@ -10,6 +10,7 @@ COPY requirements.txt ./
 RUN pip install --no-cache-dir -r requirements.txt
 
 COPY app ./app
+COPY scripts ./scripts
 
 RUN useradd --create-home --uid 10001 --shell /usr/sbin/nologin monitor \
     && mkdir -p /data \
@@ -17,7 +18,9 @@ RUN useradd --create-home --uid 10001 --shell /usr/sbin/nologin monitor \
 
 USER monitor
 
+# Health = critical application health (persisted snapshot + heartbeat
+# freshness), not SQLite file mtime. See scripts/container_healthcheck.py.
 HEALTHCHECK --interval=60s --timeout=10s --start-period=30s --retries=3 \
-    CMD python -c "exec('''import os, sqlite3, time\np = \"/data/bybit_monitor.sqlite\"\nlatest = 0.0\nfor f in (p, p + \"-wal\"):\n    if os.path.exists(f):\n        latest = max(latest, os.path.getmtime(f))\nconn = sqlite3.connect(p)\nconn.execute(\"SELECT 1\")\nconn.close()\nassert time.time() - latest < 600, \"database stale\"\n''')"
+    CMD python scripts/container_healthcheck.py || exit 1
 
 CMD ["python", "-m", "app.main"]

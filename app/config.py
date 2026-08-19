@@ -24,6 +24,9 @@ _NUMERIC_NON_NEGATIVE = (
     "ws_stale_seconds",
     "ws_subscription_ack_timeout_seconds",
     "health_summary_seconds",
+    "health_write_interval_seconds",
+    "critical_health_failure_seconds",
+    "health_heartbeat_stale_seconds",
     "dispatcher_poll_seconds",
     "dispatcher_error_backoff_seconds",
     "notification_max_age_seconds",
@@ -37,6 +40,8 @@ _NUMERIC_POSITIVE = (
     "ws_heartbeat_interval_seconds",
     "ws_stale_seconds",
     "ws_subscription_ack_timeout_seconds",
+    "health_write_interval_seconds",
+    "health_heartbeat_stale_seconds",
     "spot_history_retention_seconds",
     "dispatcher_poll_seconds",
 )
@@ -121,6 +126,12 @@ class Settings(BaseSettings):
     # --- Observability ---
     log_level: str = "INFO"
     health_summary_seconds: float = 60.0
+    # Container health: how often the health snapshot is persisted and how
+    # long a critical subsystem may stay bad before the container is
+    # reported unhealthy / the persisted heartbeat goes stale.
+    health_write_interval_seconds: float = 30.0
+    critical_health_failure_seconds: float = 180.0
+    health_heartbeat_stale_seconds: float = 120.0
 
     # --- Dispatcher / delivery ---
     dispatcher_poll_seconds: float = 2.0

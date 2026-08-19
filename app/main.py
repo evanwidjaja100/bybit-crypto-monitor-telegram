@@ -172,6 +172,7 @@ class Application:
             dispatcher=self.dispatcher,
             database=self.db,
             registry=self.registry,
+            repository=Repository(self.db),
         )
 
         # First discovery seeds the registry and its subscriptions, so the

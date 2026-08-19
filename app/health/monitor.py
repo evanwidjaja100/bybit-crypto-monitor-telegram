@@ -44,6 +44,13 @@ class HealthState:
     linear_usdc_count: int = 0
     qualifying_coin_count: int = 0
     telegram_queue_depth: int = 0
+    # Container-health classification (H3):
+    #   healthy   - every critical dimension is acceptable
+    #   degraded  - temporary issues (Telegram, short reconnect) only
+    #   unhealthy - a critical subsystem failure persisted beyond grace
+    overall: str = "healthy"
+    critical_issues: list[str] = field(default_factory=list)
+    degraded_issues: list[str] = field(default_factory=list)
     notes: list[str] = field(default_factory=list)
 
 
@@ -66,6 +73,7 @@ class HealthMonitor:
         dispatcher: Optional[Any] = None,
         database: Optional[Any] = None,
         registry: Optional[Any] = None,
+        repository: Optional[Any] = None,
     ) -> None:
         self.config = config
         self.discovery = discovery
@@ -74,8 +82,12 @@ class HealthMonitor:
         self.dispatcher = dispatcher
         self.database = database
         self.registry = registry
+        self.repository = repository
         self.qualifying_coin_count = 0
         self.last_state: Optional[HealthState] = None
+        # First time each critical subsystem was seen bad (monotonic), so
+        # a short reconnect or blip never flips container health.
+        self._critical_since: dict[str, float] = {}
 
     def set_qualifying_count(self, count: int) -> None:
         """Report the last unique-coin qualifying count (wired by the loop)."""
@@ -86,6 +98,7 @@ class HealthMonitor:
         state = HealthState(collected_at=now)
         await self._collect_substates(state, now)
         state.qualifying_coin_count = self.qualifying_coin_count
+        self._classify(state)
         self.last_state = state
         return state
 
@@ -179,6 +192,113 @@ class HealthMonitor:
             return False
 
     # ------------------------------------------------------------------
+    # Container-health classification (H3)
+    # ------------------------------------------------------------------
+    def _classify(self, state: HealthState) -> None:
+        """Classify the snapshot into healthy / degraded / unhealthy.
+
+        Critical dimensions: database, dispatcher, REST discovery, and
+        each WebSocket stream that is enabled. A critical failure only
+        counts once it has persisted beyond ``critical_health_failure_seconds``
+        (grace), so short reconnects never flip container health. Temporary
+        Telegram issues and a non-empty retry queue are degraded only.
+        """
+        critical = []
+        degraded = []
+        grace = self.config.critical_health_failure_seconds
+
+        if not state.database_healthy:
+            critical.append("database")
+
+        if state.dispatcher_healthy is False:
+            critical.append("dispatcher")
+
+        if state.rest_healthy is False:
+            critical.append("rest")
+
+        enabled_spot = bool(self.config.enable_websocket and self.config.enable_spot)
+        enabled_linear = bool(
+            self.config.enable_websocket
+            and (self.config.enable_linear_usdt or self.config.enable_linear_usdc)
+        )
+        if enabled_spot and not self._ws_acceptable(state.last_spot_ticker_age):
+            critical.append("spot_ws")
+        if enabled_linear and not self._ws_acceptable(state.last_linear_ticker_age):
+            critical.append("linear_ws")
+        # Non-critical degradations (never make the container unhealthy).
+        if not state.telegram_healthy:
+            degraded.append("telegram")
+        if state.telegram_queue_depth > 0:
+            degraded.append("retry_queue")
+
+        bad = set(critical)
+        for name in list(self._critical_since):
+            if name not in bad:
+                del self._critical_since[name]
+        now_mono = time.monotonic()
+        persisted = []
+        for name in bad:
+            since = self._critical_since.setdefault(name, now_mono)
+            # Database failures are critical immediately (no grace): the
+            # app cannot persist anything without the database.
+            if now_mono - since >= grace or name == "database":
+                persisted.append(name)
+        # The disabled streams must never linger in the grace tracker.
+        self._critical_since = {
+            name: since
+            for name, since in self._critical_since.items()
+            if name in bad
+        }
+
+        if state.database_healthy is False:
+            state.overall = "unhealthy"
+        elif persisted:
+            state.overall = "unhealthy"
+        elif degraded:
+            state.overall = "degraded"
+        else:
+            state.overall = "healthy"
+        state.critical_issues = persisted
+        state.degraded_issues = degraded
+        if persisted:
+            state.notes.append(f"critical: {','.join(sorted(persisted))}")
+
+    def _ws_acceptable(self, last_ticker_age: Optional[int]) -> bool:
+        """A stream is acceptable while its last ticker is fresher than the
+        stale threshold the client itself reconnects at (``ws_stale_seconds``).
+        A feed that stays dead past that threshold is a real failure; the
+        grace window below decides whether it is critical yet."""
+        return last_ticker_age is not None and last_ticker_age <= int(
+            self.config.ws_stale_seconds
+        )
+
+    # ------------------------------------------------------------------
+    # Persisted snapshot (read by the container healthcheck)
+    # ------------------------------------------------------------------
+    async def persist_snapshot(self, state: HealthState) -> None:
+        """Write the compact health snapshot into the kv table.
+
+        The container healthcheck script reads this row and exits non-zero
+        when the heartbeat is stale or a critical failure is persisted.
+        """
+        if self.repository is None:
+            return
+        payload = {
+            "last_updated_at": int(time.time()),
+            "overall": state.overall,
+            "database": "ok" if state.database_healthy else "fail",
+            "dispatcher": "ok" if state.dispatcher_healthy else "fail",
+            "rest": "ok" if state.rest_healthy else "fail",
+            "spot_ws": "ok" if state.spot_ws_connected else "fail",
+            "linear_ws": "ok" if state.linear_ws_connected else "fail",
+            "last_discovery_age": state.last_discovery_age,
+            "last_spot_ticker_age": state.last_spot_ticker_age,
+            "last_linear_ticker_age": state.last_linear_ticker_age,
+            "critical_issues": state.critical_issues,
+        }
+        await self.repository.kv_set_json("health:snapshot", payload)
+
+    # ------------------------------------------------------------------
     # Summary
     # ------------------------------------------------------------------
     @staticmethod
@@ -222,7 +342,10 @@ class HealthMonitor:
     # Periodic loop
     # ------------------------------------------------------------------
     async def run_forever(self, stop_event: asyncio.Event) -> None:
-        interval = self.config.health_summary_seconds
+        interval = min(
+            self.config.health_summary_seconds,
+            self.config.health_write_interval_seconds,
+        )
         logger.info(
             "event=health_loop_started interval=%.0fs", interval
         )
@@ -230,6 +353,7 @@ class HealthMonitor:
             try:
                 state = await self.snapshot()
                 logger.info("event=health_summary\n%s", self.format_summary(state))
+                await self.persist_snapshot(state)
                 if state.notes:
                     logger.warning(
                         "event=health_issues issues=%s", ",".join(state.notes)
