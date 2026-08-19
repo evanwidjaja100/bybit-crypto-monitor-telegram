@@ -2,19 +2,35 @@
 
 ## Status
 
-**F12 soak in progress** — final production candidate (Phase F8 code).
+**STATUS: INVALIDATED**
 
-- START UTC: `2026-08-19 01:01:37`
-- COMMIT: `bb2410d` (F8; F9/F11 added only scripts/docs/artifacts, no runtime change)
-- DOCKER IMAGE ID: `sha256:9cab41a5b20f7c0a8e253c8346d38319b267d6e1edf71d5cb821bb7c278f3cd3`
-- PYTHON VERSION: 3.14.7 (`python:3.14-slim`)
-- DEPENDENCY LOCK HASH: pip freeze `SHA256 DC8F0A8B5687161B0204F4440C3939A588F0CDF3D60E7D642436A82394F39EF8` (`artifacts/pip-freeze.txt`)
-- DATABASE MIGRATION VERSION: 3 (fresh volume `bybit-monitor-soak-data`)
-- Container: `bybit-monitor-soak` (`--restart unless-stopped`), monitoring-only
-  mode (no Telegram credentials — delivery paths pending Phase F10).
+reason:
 
-The earlier compose stack (started 2026-08-18, pre-F8 code) is superseded and
-stopped; it does not count toward the F12 clock.
+- H1-H3 changed runtime behavior (subscription ACK correlation, socket
+  lifecycle cleanup, container health semantics).
+
+old soak start:
+
+- `2026-08-19 01:01:37` UTC (commit `bb2410d`, image
+  `sha256:9cab41a5b20f...`)
+- historical only
+- not valid for final release
+
+The old soak clock does not count toward final acceptance.
+
+## Required next soak sequence
+
+```text
+J1-J5 complete
+↓
+J-series evidence refreshed
+↓
+F10 real Telegram passed
+↓
+final image built
+↓
+fresh F12 soak starts from zero
+```
 
 ## How to inspect
 
@@ -31,6 +47,8 @@ discovery age.
 
 ## Mandatory interventions (plan §17.4)
 
+Re-run in the fresh F12 soak, on the final image:
+
 1. Three container restarts.
 2. One temporary network outage.
 3. One forced Spot WS reconnect.
@@ -43,11 +61,10 @@ discovery age.
 9. Verify Spot history continuity after restart.
 10. Dispatcher survives injected transient repository error — pending F10.
 
-Interventions 5-8 and 10 require alert delivery enabled; they will be run
-after Phase F10 is unblocked, and the soak clock restarts from zero if any
-runtime code/configuration changes at that point.
+Interventions 5-8 and 10 require alert delivery enabled; they will run
+after Phase F10 is unblocked.
 
 ## Acceptance
 
-After ≥24 elapsed hours with no failure criteria (§17.5): record results
-here, then mark production-ready.
+After 24 elapsed hours of the fresh F12 soak with no failure criteria
+(§17.5): record results here, then mark production-ready.

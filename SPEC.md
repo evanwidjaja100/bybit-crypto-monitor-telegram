@@ -1,8 +1,6 @@
 # SPEC — Bybit Live Momentum Monitor → Telegram
 
-Derived from `bybit_telegram_momentum_master_implementation_plan.md`
-(the authoritative blueprint). This document captures the locked
-specification of the product.
+This document captures the locked specification of the product.
 
 ## 1. Objective
 

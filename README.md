@@ -184,5 +184,4 @@ see `docs/soak-test.md` for the runbook.
 
 ## License
 
-Internal use. See the master implementation plan for the authoritative
-specification (`bybit_telegram_momentum_master_implementation_plan.md`).
+Internal use. See `SPEC.md` for the authoritative product specification.

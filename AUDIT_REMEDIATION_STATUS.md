@@ -39,9 +39,9 @@ websockets==17.0.1
 
 OS: Windows (win32), shell PowerShell 5.1.
 
-Git status at baseline: only `bybit_telegram_momentum_master_implementation_plan.md`
-modified (the authoritative plan document provided for this remediation; included
-in the R0 commit so the tree is clean).
+Git status at baseline: only the authoritative implementation-plan document
+was modified (provided for this remediation; included in the R0 commit so the
+tree is clean).
 
 Credentials check: `.env` is git-ignored and not tracked; only `.env.example`
 (placeholders) is tracked. No real credentials present in the repository.
@@ -64,7 +64,7 @@ Baseline output: `artifacts/baseline-test-results.txt`.
 | R9 — docs + reproducible deps | COMPLETE | `7c253cc` |
 | R10 — recovery and chaos acceptance | COMPLETE | `7ac2fc8` |
 | R11 — live staging validation | PARTIAL (public Bybit done; Telegram items blocked on real credentials) | `6f7640b` |
-| R12 — 24-hour soak | SOAK IN PROGRESS (operator task, ≥24 elapsed hours, runbook `docs/real-soak.md`) | |
+| R12 — 24-hour soak | INVALIDATED — superseded by F-series/H-series runtime changes | |
 | R13 — final acceptance | pending | |
 
 Current test count (after R10): 283 passed / 0 failed (3 consecutive identical
