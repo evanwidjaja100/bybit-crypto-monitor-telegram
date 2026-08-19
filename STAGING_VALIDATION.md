@@ -1,6 +1,7 @@
-# Phase F9 — Real Bybit Staging Validation
+# Phase H5 — Real Bybit Staging Validation (refreshed)
 
-Date: 2026-08-19 · Branch: `final-production-readiness` · Base commit: `bb2410d`
+Date: 2026-08-19 · Branch: `final-ws-ops-hardening` · Commit: `aaae752` ·
+Image: `bybit-monitor:final` (`92fc5de35353`)
 
 Live public Bybit endpoints only. No credentials involved.
 
@@ -9,9 +10,9 @@ Live public Bybit endpoints only. No credentials involved.
 | Universe | Count |
 | --- | --- |
 | Spot | 555 |
-| Linear USDT | 756 |
+| Linear USDT | 757 |
 | Linear USDC | 68 |
-| Linear PreLaunch | 5 |
+| Linear PreLaunch | 4 |
 
 ## Contract checks
 
@@ -20,18 +21,22 @@ Run via `scripts/staging_validation.py` (public endpoints):
 ```
 REST:
   [PASS] spot discovery - count=555
-  [PASS] linear pagination drains - count=824
+  [PASS] linear pagination drains - count=825
   [PASS] settlement filtering - settle_coins=['USDC', 'USDT']
-  [PASS] linear USDT count - count=756
+  [PASS] linear USDT count - count=757
   [PASS] linear USDC count - count=68
-  [PASS] linear PreLaunch discovery - count=5
+  [PASS] linear PreLaunch discovery - count=4
   [PASS] 1h derivative reference (prevPrice1h) - 829/829
   [PASS] announcements fetched - count=50
   [PASS] announcement nested type/tags
-WEBSOCKET:
+WEBSOCKET (subscription ACK confirmed, H1):
+  [PASS] WS spot subscribe request emitted (req_id recorded)
+  [PASS] WS spot subscription ACK success (pending -> confirmed)
   [PASS] WS spot ticker received
   [PASS] WS spot top-level ts
   [PASS] WS spot dynamic subscription - BTCUSDT ticker arrived
+  [PASS] WS linear subscribe request emitted (req_id recorded)
+  [PASS] WS linear subscription ACK success (pending -> confirmed)
   [PASS] WS linear ticker received
   [PASS] WS linear top-level ts
   [PASS] WS linear dynamic subscription - BTCUSDT ticker arrived
@@ -66,8 +71,10 @@ Verified: registry event emitted, listing event recorded, outbox row reached
 
 ## Phase status
 
-- PHASE: F9
+- PHASE: H5 (refresh of F9 evidence on the hardened candidate)
 - STATUS: DONE
-- Exit gate: no API-contract mismatch on current Bybit public endpoints.
+- Exit gate: no API-contract mismatch on current Bybit public endpoints;
+  subscription ACKs confirmed for both Spot and Linear (H1).
 - Remaining: F10 (real Telegram delivery + 15.3 controlled failure) is
-  BLOCKED until real credentials are provided via environment.
+  BLOCKED until real credentials are provided via environment; F12 soak
+  must restart from zero on the H5 image.

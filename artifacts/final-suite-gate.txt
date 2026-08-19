@@ -1,7 +1,11 @@
-﻿PHASE F8 REPETITION GATE: 5 CONSECUTIVE FULL-SUITE RUNS
-All runs: 313 passed, 0 failed, 0 flaky
-[2026-08-18 15:32:52 UTC] RUN 1: 313 passed in 30.41s
-[2026-08-18 15:33:24 UTC] RUN 2: 313 passed in 30.54s
-[2026-08-18 15:33:55 UTC] RUN 3: 313 passed in 29.45s
-[2026-08-18 15:34:26 UTC] RUN 4: 313 passed in 29.70s
-[2026-08-18 15:34:58 UTC] RUN 5: 313 passed in 30.14s
+﻿FINAL SUITE GATE (H5) - 5 consecutive runs on the exact same commit
+====================================================================
+COMMIT:   aaae7528fd7e4e0683c5e88e6452ee60468076ef
+PYTHON:   Python 3.14.6
+RUN 1:    347 passed in 52.30s
+RUN 2:    347 passed in 51.91s
+RUN 3:    347 passed in 52.63s
+RUN 4:    347 passed in 52.14s
+RUN 5:    347 passed in 52.16s
+GATE:     PASS (5/5 consecutive green runs)
+UTC:      2026-08-19 02:58:56

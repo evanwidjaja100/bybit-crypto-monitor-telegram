@@ -1,7 +1,17 @@
-﻿DOCKER TEST RESULTS
-DATE UTC: 2026-08-18 15:22:22
-IMAGE: bybit-monitor:final (docker build --no-cache)
-BASE: python:3.14-slim
-CONTAINER PYTHON: Python 3.14.7
-FULL TEST SUITE IN PRODUCTION CONTAINER: 304 passed
-HOST PYTHON: 3.14.6 (venv, same 3.14.x line)
+﻿DOCKER TEST RESULTS (H5)
+=======================
+UTC TIMESTAMP: 2026-08-19 03:03:11
+COMMIT:        aaae7528fd7e4e0683c5e88e6452ee60468076ef
+IMAGE:         bybit-monitor:final (no-cache build)
+IMAGE ID:      92fc5de35353
+PYTHON:        Python 3.14.7 (python:3.14-slim)
+TEST COUNT:    347 passed / 0 failed
+RESULT:        PASS
+........................................................................ [ 20%]
+........................................................................ [ 41%]
+........................................................................ [ 62%]
+........................................................................ [ 82%]
+...........................................................              [100%]
+347 passed in 150.73s (0:02:30)
+
+

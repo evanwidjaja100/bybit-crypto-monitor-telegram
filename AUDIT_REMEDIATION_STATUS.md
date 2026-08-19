@@ -99,11 +99,34 @@ Branch `final-production-readiness`. 313 tests, 5 consecutive identical runs
 | F9 — live Bybit staging validation | COMPLETE | `32f6e67` |
 | F10 — real Telegram staging validation | BLOCKED (no real credentials) | |
 | F11 — final security audit | COMPLETE | `84261dd` |
-| F12 — final 24-hour soak | IN PROGRESS (started 2026-08-19 01:01:37 UTC, container `bybit-monitor-soak`, image `sha256:9cab41a5...`, see `SOAK.md`) | `dba8eef` |
+| F12 — final 24-hour soak | INVALIDATED — H1–H3 changed runtime behavior; must restart from zero after F10 | `dba8eef` |
 | F13 — production readiness acceptance | PARTIAL (clean-env 313 passed; migration v1→v3 validated, data preserved) | |
 
+## WebSocket & operations hardening (H-series) phase log
+
+Branch `final-ws-ops-hardening`. Baseline 313 tests
+(`artifacts/ws-ops-hardening-baseline.txt`, commit `4dc8c77`).
+
+| Phase | Status | Commit |
+|---|---|---|
+| H0 — freeze baseline | COMPLETE | `4dc8c77` (baseline) |
+| H1 — confirm WS subscriptions by ACK | COMPLETE | `50971da` |
+| H2 — guarantee disconnect-state cleanup | COMPLETE | `194dd26` |
+| H3 — connect container health to app health | COMPLETE | `059474a` |
+| H4 — remove duplicate state helper + sync docs | COMPLETE | `aaae752` |
+| H5 — refresh final validation evidence | COMPLETE | `artifacts/final-suite-gate.txt` + `artifacts/docker-test-results.txt` + `artifacts/staging-validation.txt` |
+
+Current test count: 347 passed / 0 failed (5 consecutive identical runs,
+`artifacts/final-suite-run{1..5}.txt` + `final-suite-gate.txt`; 347 passed
+inside the final image, `artifacts/docker-test-results.txt`). Live staging
+with real Bybit subscription ACKs: `artifacts/staging-validation.txt`.
+
+H1–H3 changed runtime behavior, so the previously running F12 soak is
+invalid for final acceptance and must restart from zero.
+
 Per the production-ready decision rule (§19), `PRODUCTION READY: YES` requires
-real Telegram staging and a completed 24h soak — both still pending, so:
+real Telegram staging (F10) and a completed 24h soak restarted after H1–H5 —
+both still pending, so:
 
 ```
 STATUS: IN PROGRESS
@@ -163,11 +186,20 @@ PRODUCTION READY: NO
 - [x] Settlement filters correct (live: USDT/USDC only).
 
 ### Runtime
-- [x] Production Docker Python validated (3.14.7, 313 passed in container).
+- [x] Production Docker Python validated (3.14.7, 347 passed in container, H5).
 - [x] Non-root container (`USER monitor`, uid 10001).
 - [x] Persistent `/data`.
-- [x] Healthcheck works (soak container `(healthy)`).
+- [x] Healthcheck reflects critical application health (H3: `scripts/container_healthcheck.py` on persisted `health:snapshot`, 60s/10s/30s/3; unhealthy on sustained critical failure, degraded on transient).
 - [x] Graceful shutdown (SIGTERM -> `shutdown_complete`, F6 lifecycle).
+
+### WebSocket & operations hardening (H-series)
+- [x] Subscriptions confirmed by server ACK (`req_id` echo, pending -> confirmed; H1).
+- [x] Failed/timed-out ACKs trigger reconnect that rebuilds the desired universe (H1).
+- [x] Disconnect state cleanup on every exit path — `try/finally`, dead socket never reported connected (H2).
+- [x] Idempotent status transitions (single source of truth, H2).
+- [x] Duplicate `_save()` removed from `app/alerts/state_machine.py` (H4).
+- [x] Docs synced: README healthcheck values/semantics, release status, market support, WS ACK behavior (H4).
+- [x] 5-run gate + in-container suite + live staging ACK checks refreshed (H5).
 
 ### Security
 - [x] No secrets tracked.
@@ -181,8 +213,8 @@ PRODUCTION READY: NO
 - [ ] Real Telegram retry/recovery passed — BLOCKED (no credentials).
 
 ### Soak
-- [x] Final candidate unchanged during soak (image `sha256:9cab41a5...` = F8 code; F9/F11 added no runtime code).
-- [ ] >=24 elapsed hours — clock running since 2026-08-19 01:01:37 UTC.
+- [ ] Final candidate unchanged during soak — NOT APPLICABLE: H1–H3 changed runtime; previous soak invalidated, F12 must restart from zero.
+- [ ] >=24 elapsed hours — clock must restart after the new F12 run begins.
 - [ ] All mandatory interventions completed — Telegram-dependent items pending F10.
 - [ ] Soak passed.
 
