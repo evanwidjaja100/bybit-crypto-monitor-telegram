@@ -1,0 +1,14 @@
+﻿WS-OPS HARDENING BASELINE (H0)
+==============================
+BASE COMMIT:     4dc8c77 (Phase F13: production readiness acceptance, partial)
+CURRENT TEST COUNT: 313 passed
+PYTHON VERSION:  Python 3.14.6
+DOCKER IMAGE ID: 9cab41a5b20f (bybit-monitor:final, pre-hardening)
+GIT STATUS:      branch final-ws-ops-hardening; only deleted bybit_monitor_final_production_readiness_plan.md (restored tracked docs: AUDIT_REMEDIATION_STATUS.md, STAGING_VALIDATION.md)
+DATE (UTC):      2026-08-19 02:24:14
+........................................................................ [ 46%]
+........................................................................ [ 69%]
+........................................................................ [ 92%]
+.........................                                                [100%]
+313 passed in 32.12s
+

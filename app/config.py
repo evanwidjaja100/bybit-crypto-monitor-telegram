@@ -22,6 +22,7 @@ _NUMERIC_NON_NEGATIVE = (
     "telegram_timeout_seconds",
     "ws_heartbeat_interval_seconds",
     "ws_stale_seconds",
+    "ws_subscription_ack_timeout_seconds",
     "health_summary_seconds",
     "dispatcher_poll_seconds",
     "dispatcher_error_backoff_seconds",
@@ -35,6 +36,7 @@ _NUMERIC_POSITIVE = (
     "telegram_timeout_seconds",
     "ws_heartbeat_interval_seconds",
     "ws_stale_seconds",
+    "ws_subscription_ack_timeout_seconds",
     "spot_history_retention_seconds",
     "dispatcher_poll_seconds",
 )
@@ -111,6 +113,10 @@ class Settings(BaseSettings):
     ws_heartbeat_interval_seconds: float = 20.0
     ws_stale_seconds: float = 60.0
     ws_subscribe_batch_size: int = 10
+    # A subscribe request that has not been acknowledged within this
+    # window triggers a reconnect; a topic is never treated as confirmed
+    # without a successful Bybit ACK.
+    ws_subscription_ack_timeout_seconds: float = 10.0
 
     # --- Observability ---
     log_level: str = "INFO"

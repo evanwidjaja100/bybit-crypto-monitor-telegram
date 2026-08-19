@@ -1,4 +1,4 @@
-"""Phase 10 - WebSocket client and manager tests against a local fake server."""
+﻿"""Phase 10 - WebSocket client and manager tests against a local fake server."""
 
 from __future__ import annotations
 
@@ -64,6 +64,18 @@ def ticker_delta(symbol: str, **fields) -> str:
     )
 
 
+def subscribe_ack(data: dict) -> str:
+    """Realistic Bybit ACK: echoes the request's req_id."""
+    return json.dumps(
+        {
+            "op": "subscribe",
+            "success": True,
+            "req_id": data.get("req_id"),
+            "ret_msg": "",
+        }
+    )
+
+
 class TestClient:
     async def test_connects_and_subscribes_topics(self, tmp_path):
         received: list[dict] = []
@@ -79,7 +91,7 @@ class TestClient:
                         await websocket.send(json.dumps({"op": "pong"}))
                     elif data.get("op") == "subscribe":
                         await websocket.send(
-                            json.dumps({"op": "subscribe", "success": True})
+                            subscribe_ack(data)
                         )
             except Exception:
                 pass
@@ -234,7 +246,7 @@ class TestClient:
                     if data.get("op") == "subscribe":
                         subscribe_ops.append(data["args"])
                         await websocket.send(
-                            json.dumps({"op": "subscribe", "success": True})
+                            subscribe_ack(data)
                         )
                         if connections == 1:
                             await websocket.send(ticker_snapshot("BTCUSDT"))
@@ -423,6 +435,8 @@ class TestManager:
                 async for message in websocket:
                     data = json.loads(message)
                     received.append(data)
+                    if data.get("op") == "subscribe":
+                        await websocket.send(subscribe_ack(data))
             except Exception:
                 pass
 

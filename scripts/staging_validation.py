@@ -132,6 +132,7 @@ async def ws_check(category: str, label: str, timeout: float = 30.0) -> None:
         ws_stale_seconds=60.0,
         ws_heartbeat_interval_seconds=20.0,
         ws_subscribe_batch_size=10,
+        ws_subscription_ack_timeout_seconds=10.0,
     )
     messages: list[dict] = []
     client = BybitWebSocketClient(
@@ -142,10 +143,12 @@ async def ws_check(category: str, label: str, timeout: float = 30.0) -> None:
     task = asyncio.create_task(client.run(stop))
     try:
         await asyncio.wait_for(
-            _collect_tickers(client, messages, timeout), timeout=timeout + 15
+            _collect_ack_then_tickers(client, messages, timeout),
+            timeout=timeout + 15,
         )
     except asyncio.TimeoutError:
         check(f"WS {label} ticker received", False, "timed out")
+        check(f"WS {label} subscription ACK success", False, "timed out")
         return
     finally:
         stop.set()
@@ -167,17 +170,43 @@ async def ws_check(category: str, label: str, timeout: float = 30.0) -> None:
         )
 
 
-async def _collect_tickers(
+async def _collect_ack_then_tickers(
     client: BybitWebSocketClient, messages: list[dict], timeout: float
 ) -> None:
-    """Wait until the client has received at least one ticker."""
-    del client  # the client feeds messages via on_message
+    """Wait until the pending subscribe request has moved to confirmed
+    via a successful ACK, and at least one ticker has arrived.
+
+    ACK correctness is validated from the client's subscription state
+    (pending -> confirmed), never inferred from ticker arrival alone.
+    """
     deadline = time.time() + timeout
+    saw_request = False
+    saw_ack = False
     while time.time() < deadline:
-        if any(m.get("symbol") is not None for m in messages):
+        subscribed = "BTCUSDT" in client._subscribed
+        pending = "BTCUSDT" in client.pending_symbols
+        if client.pending_subscriptions or subscribed:
+            if not saw_request:
+                check(
+                    f"WS {client.category} subscribe request emitted (req_id recorded)",
+                    True,
+                )
+                saw_request = True
+        if subscribed and not pending:
+            if not saw_ack:
+                check(
+                    f"WS {client.category} subscription ACK success (pending -> confirmed)",
+                    True,
+                )
+                saw_ack = True
+        if saw_ack and any(m.get("symbol") == "BTCUSDT" for m in messages):
             return
         await asyncio.sleep(0.25)
-    raise asyncio.TimeoutError("no ticker received")
+    if not saw_request:
+        check(f"WS {client.category} subscribe request emitted (req_id recorded)", False)
+    if not saw_ack:
+        check(f"WS {client.category} subscription ACK success (pending -> confirmed)", False)
+    raise asyncio.TimeoutError("no ACK-confirmed ticker received")
 
 
 async def ws_checks() -> None:

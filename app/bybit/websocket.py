@@ -9,6 +9,13 @@ replaced.
 
 Delta handling: partial ``delta`` updates merge into the existing ticker
 snapshot; they never replace it.
+
+Subscription acknowledgement (H1): a topic is NEVER considered subscribed
+because a request was sent. Every subscribe request carries a unique
+``req_id`` and stays ``pending`` until Bybit returns a successful ACK for
+that exact ``req_id``. Failed ACKs and missing ACKs (timeout) mark the
+stream unhealthy and trigger a reconnect that rebuilds subscriptions from
+the desired set.
 """
 
 from __future__ import annotations
@@ -17,6 +24,7 @@ import asyncio
 import json
 import logging
 import time
+from dataclasses import dataclass, field
 from typing import Any, Callable, Iterable, Optional
 
 import websockets
@@ -32,6 +40,21 @@ logger = logging.getLogger("bybit_monitor.bybit.websocket")
 PING_OP = {"op": "ping"}
 SUBSCRIBE_OP = "subscribe"
 MAX_RECONNECT_BACKOFF = 60.0
+
+
+@dataclass
+class PendingSubscription:
+    """One subscribe request batch awaiting its acknowledgement."""
+
+    req_id: str
+    symbols: tuple[str, ...]
+    topics: tuple[str, ...]
+    sent_at: float
+    attempt: int = 0
+
+
+class SubscriptionAckError(Exception):
+    """Bybit rejected a subscribe request (success=false ACK)."""
 
 
 async def _maybe_await(callback_result: object) -> None:
@@ -55,8 +78,12 @@ class BybitWebSocketClient:
         self.on_message = on_message
         self.on_status = on_status
         self.on_connected = on_connected
-        self._symbols: set[str] = set()
+        self._desired_symbols: set[str] = set()
+        # Confirmed only after a successful Bybit subscription ACK.
         self._subscribed: set[str] = set()
+        # Subscribe requests awaiting their ACK, keyed by req_id.
+        self._pending_subscriptions: dict[str, PendingSubscription] = {}
+        self._sequence = 0
         self._connect_attempts = 0
         # Epoch wall-clock timestamp of the last received message (health).
         self._last_message_at = 0.0
@@ -80,9 +107,23 @@ class BybitWebSocketClient:
         """Monotonic timestamp of the last received message (0 = never)."""
         return self._last_message_monotonic
 
+    @property
+    def pending_symbols(self) -> set[str]:
+        """Symbols whose subscription is requested but not yet ACKed."""
+        return {
+            symbol
+            for pending in self._pending_subscriptions.values()
+            for symbol in pending.symbols
+        }
+
+    @property
+    def pending_subscriptions(self) -> dict[str, PendingSubscription]:
+        """Copy of the pending subscribe requests (req_id -> request)."""
+        return dict(self._pending_subscriptions)
+
     def set_symbols(self, symbols: Iterable[str]) -> None:
         """Update the desired subscription set (managed by the registry)."""
-        self._symbols = set(symbols)
+        self._desired_symbols = set(symbols)
 
     # ------------------------------------------------------------------
     # Connection loop
@@ -126,7 +167,10 @@ class BybitWebSocketClient:
             self._connect_attempts = 0
             self.connected = True
             self._ws = ws
+            # Reconnect semantics: confirmed + pending are cleared; the
+            # desired set is preserved and rebuilt by resubscribe below.
             self._subscribed = set()
+            self._pending_subscriptions = {}
             self._last_message_at = time.time()
             self._last_message_monotonic = time.monotonic()
             self._last_ping_at = time.monotonic()
@@ -139,7 +183,22 @@ class BybitWebSocketClient:
                 try:
                     raw = await asyncio.wait_for(ws.recv(), timeout=0.5)
                 except asyncio.TimeoutError:
-                    if self._symbols and (
+                    if self._pending_subscriptions:
+                        expired = [
+                            pending
+                            for pending in self._pending_subscriptions.values()
+                            if time.monotonic() - pending.sent_at
+                            > self.config.ws_subscription_ack_timeout_seconds
+                        ]
+                        if expired:
+                            logger.warning(
+                                "event=ws_subscription_ack_timeout stream=%s req_ids=%s",
+                                self.category,
+                                ",".join(p.req_id for p in expired),
+                            )
+                            self._set_status(False, reason="subscribe_ack_timeout")
+                            return
+                    if self._desired_symbols and (
                         time.monotonic() - self._last_message_monotonic
                         > self.config.ws_stale_seconds
                     ):
@@ -157,6 +216,14 @@ class BybitWebSocketClient:
                     continue
                 try:
                     self._handle_raw(raw)
+                except SubscriptionAckError as exc:
+                    logger.warning(
+                        "event=ws_subscribe_rejected stream=%s error=%s",
+                        self.category,
+                        exc,
+                    )
+                    self._set_status(False, reason="subscribe_ack_failed")
+                    return
                 except Exception:
                     logger.exception(
                         "event=ws_message_error stream=%s", self.category
@@ -173,10 +240,13 @@ class BybitWebSocketClient:
     # Subscription management
     # ------------------------------------------------------------------
     async def resubscribe(self) -> None:
-        """Subscribe to any desired symbols not yet subscribed (batched)."""
+        """Subscribe to any desired symbols not yet confirmed or pending."""
         if self._ws is None:
             return
-        missing = sorted(self._symbols - self._subscribed)
+        pending = self.pending_symbols
+        missing = sorted(
+            self._desired_symbols - self._subscribed - pending
+        )
         if not missing:
             return
         await self._send_topic_ops(SUBSCRIBE_OP, missing)
@@ -196,10 +266,24 @@ class BybitWebSocketClient:
         for start in range(0, len(symbol_list), batch_size):
             batch = symbol_list[start : start + batch_size]
             topics = [f"tickers.{symbol}" for symbol in batch]
-            await self._ws.send(json.dumps({"op": op, "args": topics}))
             if op == SUBSCRIBE_OP:
-                self._subscribed.update(batch)
+                # Every subscribe request carries a unique req_id so the
+                # ACK can be correlated to this exact batch. The batch is
+                # stored as PENDING: confirmation happens only in
+                # `_handle_subscribe_ack`.
+                self._sequence += 1
+                req_id = f"sub-{self.category}-{self._sequence}"
+                await self._ws.send(
+                    json.dumps({"req_id": req_id, "op": op, "args": topics})
+                )
+                self._pending_subscriptions[req_id] = PendingSubscription(
+                    req_id=req_id,
+                    symbols=tuple(batch),
+                    topics=tuple(topics),
+                    sent_at=time.monotonic(),
+                )
             else:
+                await self._ws.send(json.dumps({"op": op, "args": topics}))
                 self._subscribed.difference_update(batch)
         logger.info(
             "event=ws_%s stream=%s topics=%d", op, self.category, len(symbol_list)
@@ -210,6 +294,9 @@ class BybitWebSocketClient:
     # ------------------------------------------------------------------
     def _handle_raw(self, raw: str) -> None:
         data = json.loads(raw)
+        if data.get("op") == SUBSCRIBE_OP:
+            self._handle_subscribe_ack(data)
+            return
         if data.get("op") == "pong":
             self._last_message_at = time.time()
             self._last_message_monotonic = time.monotonic()
@@ -227,6 +314,44 @@ class BybitWebSocketClient:
                     "ts": data.get("ts"),
                     "data": data.get("data") or {},
                 }
+            )
+
+    def _handle_subscribe_ack(self, data: dict[str, Any]) -> None:
+        """Resolve one pending subscribe request from its ACK.
+
+        Only an ACK whose ``req_id`` matches a pending request may mutate
+        subscription state. Success confirms exactly that batch; failure
+        removes it and raises :class:`SubscriptionAckError` so the caller
+        triggers recovery. Unknown or duplicate req_ids are ignored.
+        """
+        req_id = data.get("req_id")
+        pending = (
+            self._pending_subscriptions.pop(req_id, None) if req_id else None
+        )
+        if pending is None:
+            logger.warning(
+                "event=ws_subscription_ack req_id=%s unknown_or_duplicate",
+                req_id,
+            )
+            return
+        if data.get("success") is True:
+            self._subscribed.update(pending.symbols)
+            logger.info(
+                "event=ws_subscription_ack category=%s req_id=%s success=true symbols=%d",
+                self.category,
+                req_id,
+                len(pending.symbols),
+            )
+        else:
+            logger.warning(
+                "event=ws_subscription_ack category=%s req_id=%s success=false symbols=%d ret_msg=%s",
+                self.category,
+                req_id,
+                len(pending.symbols),
+                data.get("ret_msg", ""),
+            )
+            raise SubscriptionAckError(
+                f"subscribe rejected req_id={req_id}"
             )
 
 
