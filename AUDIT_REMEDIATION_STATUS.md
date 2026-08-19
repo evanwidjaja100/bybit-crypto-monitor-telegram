@@ -138,8 +138,8 @@ commit `23821264`).
 | J4 — honor configured health heartbeat threshold | COMPLETE | `5e095c0` |
 | J5 — report grace-window critical failures as degraded | COMPLETE | `529d82a` |
 | J6 — sync soak and release documentation | COMPLETE | `6bcda13` |
-| J7 — refresh post-H-series validation evidence | COMPLETE | (J7 commit) |
-| J8 — final pre-Telegram reliability review | pending | |
+| J7 — refresh post-H-series validation evidence | COMPLETE | `ccdb562` |
+| J8 — final pre-Telegram reliability review | COMPLETE | `256cb86` (review: `artifacts/j8-review.txt`) |
 
 Current test count: 373 passed / 0 failed (5 consecutive identical runs,
 `artifacts/j-final-suite-run{1..5}.txt` + `j-final-suite-gate.txt`; 373 passed
