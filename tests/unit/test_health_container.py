@@ -277,11 +277,16 @@ def healthy_payload(**overrides) -> dict:
     return payload
 
 
-def run_healthcheck(db_path: str) -> tuple[int, str]:
+def run_healthcheck(
+    db_path: str, extra_env: dict | None = None
+) -> tuple[int, str]:
+    env = {"DATABASE_PATH": db_path, "PATH": "x"}  # minimal env, no secrets
+    if extra_env:
+        env.update(extra_env)
     result = subprocess.run(
         [sys.executable, str(HEALTHCHECK)],
         cwd=str(ROOT),
-        env={"DATABASE_PATH": db_path, "PATH": "x"},  # minimal env, no secrets
+        env=env,
         capture_output=True,
         text=True,
         timeout=30,
@@ -377,3 +382,63 @@ class TestContainerHealthcheck:
         code, message = run_healthcheck(db_path)
         assert code == 1
         assert "unreadable" in message
+
+
+class TestHeartbeatThreshold:
+    """Phase J4 - HEALTH_HEARTBEAT_STALE_SECONDS must drive the healthcheck."""
+
+    def test_healthcheck_uses_default_heartbeat_threshold(self, tmp_path):
+        db_path = str(tmp_path / "default.sqlite")
+        # Snapshot 200s old: over the default 120s threshold -> unhealthy.
+        write_kv_db(
+            db_path,
+            healthy_payload(last_updated_at=int(time.time()) - 200),
+        )
+        code, message = run_healthcheck(db_path)
+        assert code == 1
+        assert "heartbeat stale" in message
+
+    def test_healthcheck_respects_custom_heartbeat_threshold(self, tmp_path):
+        db_path = str(tmp_path / "custom.sqlite")
+        write_kv_db(
+            db_path,
+            healthy_payload(last_updated_at=int(time.time()) - 200),
+        )
+        # Case A: threshold 300 -> the 200s-old heartbeat is healthy.
+        code, message = run_healthcheck(
+            db_path, {"HEALTH_HEARTBEAT_STALE_SECONDS": "300"}
+        )
+        assert code == 0, message
+        # Case B: threshold 120 -> the same snapshot is unhealthy.
+        code, message = run_healthcheck(
+            db_path, {"HEALTH_HEARTBEAT_STALE_SECONDS": "120"}
+        )
+        assert code == 1
+        assert "heartbeat stale" in message
+
+    def test_healthcheck_rejects_zero_threshold(self, tmp_path):
+        db_path = str(tmp_path / "zero.sqlite")
+        write_kv_db(db_path, healthy_payload())
+        code, message = run_healthcheck(
+            db_path, {"HEALTH_HEARTBEAT_STALE_SECONDS": "0"}
+        )
+        assert code == 1
+        assert "must be finite and > 0" in message
+
+    def test_healthcheck_rejects_negative_threshold(self, tmp_path):
+        db_path = str(tmp_path / "neg.sqlite")
+        write_kv_db(db_path, healthy_payload())
+        code, message = run_healthcheck(
+            db_path, {"HEALTH_HEARTBEAT_STALE_SECONDS": "-1"}
+        )
+        assert code == 1
+        assert "must be finite and > 0" in message
+
+    def test_healthcheck_rejects_nan_threshold(self, tmp_path):
+        db_path = str(tmp_path / "nan.sqlite")
+        write_kv_db(db_path, healthy_payload())
+        code, message = run_healthcheck(
+            db_path, {"HEALTH_HEARTBEAT_STALE_SECONDS": "nan"}
+        )
+        assert code == 1
+        assert "must be finite and > 0" in message
